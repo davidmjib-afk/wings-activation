@@ -1,5 +1,6 @@
 'use client'
 import { useEffect, useState } from 'react'
+import { useRouter } from 'next/navigation'
 import { supabase, Client, Invoice } from '@/lib/supabase'
 import {
   LayoutDashboard, Users, Star, RefreshCw, FileText,
@@ -63,6 +64,7 @@ export default function Dashboard() {
   const [tab, setTab] = useState<Tab>('existing')
   const [page, setPage] = useState<Page>('dashboard')
   const [activeNav, setActiveNav] = useState('dashboard')
+  const router = useRouter()
 
   useEffect(() => {
     async function load() {
@@ -257,10 +259,12 @@ export default function Dashboard() {
                     const days = daysSince(c.last_contact)
                     const isAtRisk = c.status === 'at_risk'
                     return (
-                      <tr key={c.id} className={`border-b border-gray-50 hover:bg-gray-50 ${isAtRisk ? 'bg-red-50/30' : ''}`}>
+                      <tr key={c.id} className={`border-b border-gray-50 hover:bg-orange-50 transition-colors ${isAtRisk ? 'bg-red-50/30' : ''}`}>
                         <td className="px-4 py-3">
-                          <div className="font-medium text-gray-900">{c.name}</div>
-                          <div className="text-xs text-gray-400">{c.industry} — {c.city}</div>
+                          <a href={`/client/${c.id}`} className="block hover:text-orange-600 transition-colors">
+                            <div className="font-medium text-gray-900 hover:text-orange-600">{c.name}</div>
+                            <div className="text-xs text-gray-400">{c.industry} — {c.city}</div>
+                          </a>
                         </td>
                         <td className="px-4 py-3 font-semibold">{formatRs(c.monthly_value)}</td>
                         <td className="px-4 py-3">{statusBadge(c.status)}</td>
