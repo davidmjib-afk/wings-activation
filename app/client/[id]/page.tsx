@@ -90,7 +90,7 @@ export default function ClientDetail() {
   const reload = useCallback(async () => {
     setLoadError(null)
     const res = await getClientDetail(clientId)
-    if (res.error) { setLoadError(res.error); setLoading(false); return }
+    if (res.error !== null) { setLoadError(res.error); setLoading(false); return }
     setClient(res.data.client)
     setInvoices(res.data.invoices.map(i => ({ ...i, status: effectiveInvoiceStatus(i) })))
     setProposals(res.data.proposals)
@@ -104,7 +104,7 @@ export default function ClientDetail() {
     setActionError(null)
     setLogging(true)
     const res = await logContactToday(clientId, client?.status)
-    if (res.error) setActionError(res.error)
+    if (res.error !== null) setActionError(res.error)
     else await reload()
     setLogging(false)
   }
@@ -114,7 +114,7 @@ export default function ClientDetail() {
     setSavingInv(true)
     const res = await createInvoice({ client_id: clientId, ...invForm })
     setSavingInv(false)
-    if (res.error) { setInvError(res.error); return }
+    if (res.error !== null) { setInvError(res.error); return }
     await reload()
     setShowInv(false)
     setInvForm({ amount: '', due_date: '', status: 'pending' })

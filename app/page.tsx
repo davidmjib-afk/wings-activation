@@ -118,7 +118,7 @@ export default function Dashboard() {
   const reload = useCallback(async () => {
     setLoadError(null)
     const res = await getDashboardData()
-    if (res.error) { setLoadError(res.error); setLoading(false); return }
+    if (res.error !== null) { setLoadError(res.error); setLoading(false); return }
     setClients(res.data.clients)
     // Invoice status is derived from due_date so it never goes stale.
     setInvoices(res.data.invoices.map(i => ({ ...i, status: effectiveInvoiceStatus(i) })))
@@ -137,7 +137,7 @@ export default function Dashboard() {
     setSaving(true)
     const res = await createClientRecord(form as ClientInput)
     setSaving(false)
-    if (res.error) { setFormError(res.error); return }
+    if (res.error !== null) { setFormError(res.error); return }
     await reload()
     setShowAdd(false)
     setForm({ name: '', industry: '', city: '', segment: 'existing', status: 'stable', monthly_value: '', notes: '' })
