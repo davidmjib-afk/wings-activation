@@ -35,6 +35,7 @@ export type Invoice = {
   client_id: string
   amount: number
   due_date: string
+  paid_date: string | null
   status: 'pending' | 'paid' | 'overdue' | 'due_today'
 }
 
