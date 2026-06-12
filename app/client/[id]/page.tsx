@@ -179,7 +179,9 @@ export default function ClientDetail() {
                   <span className="flex items-center gap-1 text-sm text-gray-500"><Building size={13} />{client.industry}</span>
                   <span className="flex items-center gap-1 text-sm text-gray-500"><MapPin size={13} />{client.city}</span>
                   {client.profiles && (
-                    <span className="flex items-center gap-1 text-sm text-gray-500"><User size={13} />{(client.profiles as any).full_name}</span>
+                    <span className="flex items-center gap-1 text-sm text-gray-500"><User size={13} />{(client.profiles as any).full_name}
+                      <span className="text-xs text-gray-400">({({'Priya Rajan':'Team North · WG-EMP-002','Arjun Mehta':'Team West · WG-EMP-003','Rahul Sharma':'Team South · WG-EMP-004','Sneha Kapoor':'Team East · WG-EMP-005','Arun Samuel':'Leadership · WG-EMP-001'} as Record<string,string>)[(client.profiles as any).full_name] || 'Team'})</span>
+                    </span>
                   )}
                 </div>
               </div>
@@ -264,6 +266,17 @@ export default function ClientDetail() {
         {/* OVERVIEW TAB */}
         {activeTab === 'overview' && (
           <div className="space-y-5">
+            <div className="rounded-xl p-4 border" style={{ background: '#FDF1E7', borderColor: '#F0C9A8' }}>
+              <div className="text-xs font-semibold uppercase tracking-wider mb-1.5" style={{ color: '#B34E00' }}>Account summary</div>
+              <p className="text-sm leading-relaxed" style={{ color: '#7A4510' }}>
+                {client.name} is a {client.status === 'growing' ? 'growing' : client.status === 'at_risk' ? 'high-priority at-risk' : client.status.replace('_',' ')} {client.segment === 'existing' ? 'account' : client.segment === 'wishlist' ? 'prospect' : 'win-back target'} worth {formatRs(client.monthly_value)} per month ({revenueShare}% of portfolio revenue).
+                {lastContactDays !== null ? ` Last contact was ${lastContactDays === 0 ? 'today' : `${lastContactDays} days ago`}${lastContactDays > 30 ? ' — overdue for outreach' : ''}.` : ' No contact has ever been logged — immediate outreach required.'}
+                {totalOutstanding > 0 ? ` Outstanding balance of ${formatRs(totalOutstanding)} needs collection.` : invoices.length > 0 ? ' All invoices are settled.' : ''}
+                {contractDaysLeft !== null && contractDaysLeft < 90 ? ` Contract expires in ${contractDaysLeft} days — begin renewal conversation now.` : ''}
+                {client.reason_for_leaving ? ` Left due to: ${client.reason_for_leaving.toLowerCase()}.` : ''}
+                {client.status === 'at_risk' ? ' Recommended action: senior-level call this week to re-establish the relationship.' : client.status === 'growing' ? ' Recommended action: explore expansion into additional service lines while momentum is strong.' : ''}
+              </p>
+            </div>
             <div className="grid grid-cols-4 gap-3">
               <Metric label="Monthly value" value={formatRs(client.monthly_value)} sub="Current billing" />
               <Metric label="Annualised value" value={formatRs(annualisedValue)} sub="Projected annual" />

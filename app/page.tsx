@@ -8,7 +8,7 @@ import {
 } from 'lucide-react'
 
 type Tab = 'existing' | 'wishlist' | 'winback'
-type Page = 'dashboard' | 'billing' | 'pipeline'
+type Page = 'dashboard' | 'billing' | 'pipeline' | 'hygiene' | 'settings'
 
 const statusBadge = (status: string) => {
   const map: Record<string, string> = {
@@ -57,6 +57,23 @@ const formatRs = (n: number) =>
     ? (n / 100000).toFixed(1) + 'L'
     : n.toLocaleString('en-IN'))
 
+function ToggleSwitch({ defaultOn }: { defaultOn: boolean }) {
+  const [on, setOn] = useState(defaultOn)
+  return (
+    <button onClick={() => setOn(!on)} className="rounded-full transition-colors" style={{ width: 38, height: 22, background: on ? '#E8650D' : '#d1d5db', position: 'relative' }}>
+      <span style={{ position: 'absolute', top: 2, left: on ? 18 : 2, width: 18, height: 18, borderRadius: '50%', background: 'white', transition: 'left 0.15s' }} />
+    </button>
+  )
+}
+
+const EMP_INFO: Record<string, { id: string; team: string; role: string }> = {
+  'Arun Samuel':  { id: 'WG-EMP-001', team: 'Leadership',  role: 'Chairman & MD' },
+  'Priya Rajan':  { id: 'WG-EMP-002', team: 'Team North',  role: 'Account Manager' },
+  'Arjun Mehta':  { id: 'WG-EMP-003', team: 'Team West',   role: 'Account Executive' },
+  'Rahul Sharma': { id: 'WG-EMP-004', team: 'Team South',  role: 'Account Executive' },
+  'Sneha Kapoor': { id: 'WG-EMP-005', team: 'Team East',   role: 'Account Executive' },
+}
+
 export default function Dashboard() {
   const [clients, setClients] = useState<Client[]>([])
   const [invoices, setInvoices] = useState<Invoice[]>([])
@@ -65,6 +82,15 @@ export default function Dashboard() {
   const [page, setPage] = useState<Page>('dashboard')
   const [activeNav, setActiveNav] = useState('dashboard')
   const [search, setSearch] = useState('')
+  const [sortKey, setSortKey] = useState<string>('monthly_value')
+  const [sortDir, setSortDir] = useState<'asc' | 'desc'>('desc')
+  const [kpiView, setKpiView] = useState<string | null>(null)
+  const [empView, setEmpView] = useState<string | null>(null)
+
+  function toggleSort(key: string) {
+    if (sortKey === key) setSortDir(d => d === 'desc' ? 'asc' : 'desc')
+    else { setSortKey(key); setSortDir('desc') }
+  }
   const [showAdd, setShowAdd] = useState(false)
   const [saving, setSaving] = useState(false)
   const [form, setForm] = useState({ name: '', industry: '', city: '', segment: 'existing', status: 'stable', monthly_value: '', notes: '' })
@@ -120,9 +146,35 @@ export default function Dashboard() {
   const navGo = (navId: string, pg: Page) => { setActiveNav(navId); setPage(pg) }
 
   const segBase = tab === 'existing' ? existing : tab === 'wishlist' ? wishlist : winback
-  const segClients = search
+  const segFiltered = search
     ? segBase.filter(c => (c.name + ' ' + (c.industry||'') + ' ' + (c.city||'')).toLowerCase().includes(search.toLowerCase()))
     : segBase
+  const statusOrder: Record<string, number> = { growing: 3, stable: 2, at_risk: 1, ready_to_sign: 4, negotiating: 3, first_meeting: 2, intro_made: 1, meeting_booked: 4, in_conversation: 3, prospect: 2, not_contacted: 1, lost: 0 }
+  const segClients = [...segFiltered].sort((a, b) => {
+    let va: any, vb: any
+    if (sortKey === 'name') { va = a.name.toLowerCase(); vb = b.name.toLowerCase() }
+    else if (sortKey === 'monthly_value') { va = a.monthly_value; vb = b.monthly_value }
+    else if (sortKey === 'status') { va = statusOrder[a.status] ?? 0; vb = statusOrder[b.status] ?? 0 }
+    else if (sortKey === 'last_contact') { va = a.last_contact ? new Date(a.last_contact).getTime() : 0; vb = b.last_contact ? new Date(b.last_contact).getTime() : 0 }
+    else if (sortKey === 'assigned') { va = ((a.profiles as any)?.full_name || '').toLowerCase(); vb = ((b.profiles as any)?.full_name || '').toLowerCase() }
+    else if (sortKey === 'contract_end') { va = a.contract_end ? new Date(a.contract_end).getTime() : 0; vb = b.contract_end ? new Date(b.contract_end).getTime() : 0 }
+    else if (sortKey === 'left_date') { va = a.left_date ? new Date(a.left_date).getTime() : 0; vb = b.left_date ? new Date(b.left_date).getTime() : 0 }
+    else { va = 0; vb = 0 }
+    if (va < vb) return sortDir === 'asc' ? -1 : 1
+    if (va > vb) return sortDir === 'asc' ? 1 : -1
+    return 0
+  })
+  const arrow = (key: string) => sortKey === key ? (sortDir === 'desc' ? ' ↓' : ' ↑') : ''
+
+  const staleDays = (cl: Client) => cl.last_contact ? Math.floor((Date.now() - new Date(cl.last_contact).getTime()) / 86400000) : 9999
+  const staleClients = clients.filter(cl => cl.segment !== 'winback' && staleDays(cl) > 7)
+  const staleByEmp: Record<string, Client[]> = {}
+  staleClients.forEach(cl => {
+    const n = (cl.profiles as any)?.full_name || 'Unassigned'
+    if (!staleByEmp[n]) staleByEmp[n] = []
+    staleByEmp[n].push(cl)
+  })
+  const empClients = (name: string) => clients.filter(cl => (cl.profiles as any)?.full_name === name)
 
   if (loading) return (
     <div className="flex items-center justify-center h-screen">
@@ -183,7 +235,13 @@ export default function Dashboard() {
           </div>
 
           <div className="text-xs text-gray-400 px-4 pt-3 pb-1 uppercase tracking-wider font-medium">Team</div>
-          <div className="nav-item"><Settings size={16} /> Settings</div>
+          <div className={`nav-item ${activeNav === 'hygiene' ? 'active' : ''}`} onClick={() => navGo('hygiene','hygiene')}>
+            <AlertTriangle size={16} /> Data hygiene
+            {staleClients.length > 0 && <span className="ml-auto text-xs bg-amber-100 text-amber-700 rounded-full px-2 py-0.5 font-semibold">{staleClients.length}</span>}
+          </div>
+          <div className={`nav-item ${activeNav === 'settings' ? 'active' : ''}`} onClick={() => navGo('settings','settings')}>
+            <Settings size={16} /> Settings
+          </div>
         </div>
 
         {/* Main */}
@@ -199,22 +257,22 @@ export default function Dashboard() {
 
             {/* KPIs row 1 */}
             <div className="grid grid-cols-4 gap-3 mb-3">
-              <div className="kpi-card highlight">
+              <div onClick={() => setKpiView('active')} className="kpi-card highlight cursor-pointer hover:shadow-md transition-shadow">
                 <div className="text-xs text-gray-400 uppercase tracking-wider mb-1.5">Active clients</div>
                 <div className="text-3xl font-semibold">{existing.length}</div>
                 <div className="text-xs text-green-600 mt-1.5">↑ Growing year on year</div>
               </div>
-              <div className="kpi-card">
+              <div onClick={() => setKpiView('revenue')} className="kpi-card cursor-pointer hover:shadow-md transition-shadow">
                 <div className="text-xs text-gray-400 uppercase tracking-wider mb-1.5">Monthly revenue</div>
                 <div className="text-3xl font-semibold">{formatRs(totalMonthly)}</div>
                 <div className="text-xs text-gray-400 mt-1.5">{formatRs(totalMonthly * 12)} annualised</div>
               </div>
-              <div className="kpi-card">
+              <div onClick={() => setKpiView('pipeline')} className="kpi-card cursor-pointer hover:shadow-md transition-shadow">
                 <div className="text-xs text-gray-400 uppercase tracking-wider mb-1.5">Pipeline value</div>
                 <div className="text-3xl font-semibold">{formatRs(pipelineVal)}</div>
                 <div className="text-xs text-gray-400 mt-1.5">{wishlist.length} open prospects</div>
               </div>
-              <div className="kpi-card">
+              <div onClick={() => setKpiView('winback')} className="kpi-card cursor-pointer hover:shadow-md transition-shadow">
                 <div className="text-xs text-gray-400 uppercase tracking-wider mb-1.5">Win-back opportunity</div>
                 <div className="text-3xl font-semibold">{formatRs(winbackVal)}</div>
                 <div className="text-xs text-red-500 mt-1.5">{winback.length} lapsed clients</div>
@@ -223,22 +281,22 @@ export default function Dashboard() {
 
             {/* KPIs row 2 */}
             <div className="grid grid-cols-4 gap-3 mb-4">
-              <div className="kpi-card">
+              <div onClick={() => setKpiView('at_risk')} className="kpi-card cursor-pointer hover:shadow-md transition-shadow">
                 <div className="text-xs text-gray-400 uppercase tracking-wider mb-1.5">At-risk clients</div>
                 <div className="text-3xl font-semibold text-red-600">{atRisk.length}</div>
                 <div className="text-xs text-red-400 mt-1.5">Needs immediate action</div>
               </div>
-              <div className="kpi-card">
+              <div onClick={() => setKpiView('avg')} className="kpi-card cursor-pointer hover:shadow-md transition-shadow">
                 <div className="text-xs text-gray-400 uppercase tracking-wider mb-1.5">Avg client value</div>
                 <div className="text-3xl font-semibold">{existing.length ? formatRs(Math.round(totalMonthly / existing.length)) : 'Rs 0'}</div>
                 <div className="text-xs text-gray-400 mt-1.5">Per month</div>
               </div>
-              <div className="kpi-card">
+              <div onClick={() => setKpiView('outstanding')} className="kpi-card cursor-pointer hover:shadow-md transition-shadow">
                 <div className="text-xs text-gray-400 uppercase tracking-wider mb-1.5">Outstanding invoices</div>
                 <div className="text-3xl font-semibold">{formatRs(outstanding)}</div>
                 <div className="text-xs text-red-400 mt-1.5">{overdue.length} overdue</div>
               </div>
-              <div className="kpi-card">
+              <div onClick={() => setKpiView('retention')} className="kpi-card cursor-pointer hover:shadow-md transition-shadow">
                 <div className="text-xs text-gray-400 uppercase tracking-wider mb-1.5">Retention rate</div>
                 <div className="text-3xl font-semibold">87%</div>
                 <div className="text-xs text-green-600 mt-1.5">↑ 3% vs last year</div>
@@ -247,7 +305,7 @@ export default function Dashboard() {
 
             {/* At risk alert */}
             {atRisk.length > 0 && (
-              <div className="flex items-start gap-3 rounded-xl p-3.5 mb-4 border" style={{ background: '#FDF1E7', borderColor: '#E8650D' }}>
+              <div onClick={() => setKpiView('at_risk')} className="flex items-start gap-3 rounded-xl p-3.5 mb-4 border cursor-pointer hover:shadow-md transition-shadow" style={{ background: '#FDF1E7', borderColor: '#E8650D' }}>
                 <AlertTriangle size={18} style={{ color: '#E8650D', flexShrink: 0, marginTop: 1 }} />
                 <div className="text-sm" style={{ color: '#B34E00' }}>
                   <strong>{atRisk.length} clients are at risk of churning.</strong>{' '}
@@ -284,15 +342,15 @@ export default function Dashboard() {
               <table className="w-full text-sm">
                 <thead className="bg-gray-50 border-b border-gray-100">
                   <tr>
-                    <th className="text-left px-4 py-2.5 text-xs font-medium text-gray-400 uppercase tracking-wider">Client</th>
-                    <th className="text-left px-4 py-2.5 text-xs font-medium text-gray-400 uppercase tracking-wider">Monthly value</th>
-                    <th className="text-left px-4 py-2.5 text-xs font-medium text-gray-400 uppercase tracking-wider">Status</th>
-                    <th className="text-left px-4 py-2.5 text-xs font-medium text-gray-400 uppercase tracking-wider">
-                      {tab === 'winback' ? 'Reason left' : 'Last contact'}
+                    <th onClick={() => toggleSort('name')} className="text-left px-4 py-2.5 text-xs font-medium text-gray-400 uppercase tracking-wider cursor-pointer select-none hover:text-orange-600">Client{arrow('name')}</th>
+                    <th onClick={() => toggleSort('monthly_value')} className="text-left px-4 py-2.5 text-xs font-medium text-gray-400 uppercase tracking-wider cursor-pointer select-none hover:text-orange-600">Monthly value{arrow('monthly_value')}</th>
+                    <th onClick={() => toggleSort('status')} className="text-left px-4 py-2.5 text-xs font-medium text-gray-400 uppercase tracking-wider cursor-pointer select-none hover:text-orange-600">Status{arrow('status')}</th>
+                    <th onClick={() => tab !== 'winback' && toggleSort('last_contact')} className="text-left px-4 py-2.5 text-xs font-medium text-gray-400 uppercase tracking-wider cursor-pointer select-none hover:text-orange-600">
+                      {tab === 'winback' ? 'Reason left' : <>Last contact{arrow('last_contact')}</>}
                     </th>
-                    <th className="text-left px-4 py-2.5 text-xs font-medium text-gray-400 uppercase tracking-wider">Assigned to</th>
-                    {tab === 'existing' && <th className="text-left px-4 py-2.5 text-xs font-medium text-gray-400 uppercase tracking-wider">Contract ends</th>}
-                    {tab === 'winback' && <th className="text-left px-4 py-2.5 text-xs font-medium text-gray-400 uppercase tracking-wider">Left date</th>}
+                    <th onClick={() => toggleSort('assigned')} className="text-left px-4 py-2.5 text-xs font-medium text-gray-400 uppercase tracking-wider cursor-pointer select-none hover:text-orange-600">Assigned to{arrow('assigned')}</th>
+                    {tab === 'existing' && <th onClick={() => toggleSort('contract_end')} className="text-left px-4 py-2.5 text-xs font-medium text-gray-400 uppercase tracking-wider cursor-pointer select-none hover:text-orange-600">Contract ends{arrow('contract_end')}</th>}
+                    {tab === 'winback' && <th onClick={() => toggleSort('left_date')} className="text-left px-4 py-2.5 text-xs font-medium text-gray-400 uppercase tracking-wider cursor-pointer select-none hover:text-orange-600">Left date{arrow('left_date')}</th>}
                   </tr>
                 </thead>
                 <tbody>
@@ -317,8 +375,13 @@ export default function Dashboard() {
                               : <span className="text-xs text-red-500">Never contacted</span>
                           }
                         </td>
-                        <td className="px-4 py-3 text-sm text-gray-600">
-                          {(c.profiles as any)?.full_name || '—'}
+                        <td className="px-4 py-3 text-sm">
+                          {(c.profiles as any)?.full_name ? (
+                            <button onClick={() => setEmpView((c.profiles as any).full_name)} className="text-left hover:text-orange-600">
+                              <div className="text-gray-700 font-medium">{(c.profiles as any).full_name}</div>
+                              <div className="text-xs text-gray-400">{EMP_INFO[(c.profiles as any).full_name]?.team} · {EMP_INFO[(c.profiles as any).full_name]?.id}</div>
+                            </button>
+                          ) : <span className="text-gray-400">—</span>}
                         </td>
                         {tab === 'existing' && (
                           <td className="px-4 py-3 text-sm text-gray-500">
@@ -345,22 +408,22 @@ export default function Dashboard() {
                   <span className="text-xs text-red-500 font-medium">{formatRs(winbackVal)} recoverable</span>
                 </div>
                 {winback.sort((a,b) => b.monthly_value - a.monthly_value).slice(0,5).map(c => (
-                  <div key={c.id} className="flex justify-between items-center py-2 border-b border-gray-50 last:border-0">
-                    <span className="text-sm text-gray-600">{c.name}</span>
+                  <a key={c.id} href={`/client/${c.id}`} className="flex justify-between items-center py-2 border-b border-gray-50 last:border-0 hover:bg-orange-50 px-1 rounded transition-colors">
+                    <span className="text-sm text-gray-600 hover:text-orange-600">{c.name}</span>
                     <span className="text-sm font-medium text-red-600">{formatRs(c.monthly_value)}</span>
-                  </div>
+                  </a>
                 ))}
               </div>
               <div className="bg-white border border-gray-100 rounded-xl p-4">
-                <div className="flex items-center justify-between mb-3">
-                  <span className="text-sm font-semibold">Wish list pipeline</span>
+                <div className="flex items-center justify-between mb-3 cursor-pointer" onClick={() => navGo('pipeline','pipeline')}>
+                  <span className="text-sm font-semibold hover:text-orange-600">Wish list pipeline</span>
                   <ChevronRight size={14} className="text-gray-400" />
                 </div>
                 {wishlist.slice(0,5).map(c => (
-                  <div key={c.id} className="flex justify-between items-center py-2 border-b border-gray-50 last:border-0">
-                    <span className="text-sm text-gray-600">{c.name}</span>
+                  <a key={c.id} href={`/client/${c.id}`} className="flex justify-between items-center py-2 border-b border-gray-50 last:border-0 hover:bg-orange-50 px-1 rounded transition-colors">
+                    <span className="text-sm text-gray-600 hover:text-orange-600">{c.name}</span>
                     {statusBadge(c.status)}
-                  </div>
+                  </a>
                 ))}
               </div>
               <div className="bg-white border border-gray-100 rounded-xl p-4">
@@ -369,12 +432,12 @@ export default function Dashboard() {
                   <span className="text-xs text-gray-400">{invoices.length} total</span>
                 </div>
                 {[
-                  { label: 'Paid',      val: invoices.filter(i=>i.status==='paid').length,      cls: 'text-green-600' },
-                  { label: 'Pending',   val: invoices.filter(i=>i.status==='pending').length,   cls: 'text-gray-600' },
-                  { label: 'Due today', val: invoices.filter(i=>i.status==='due_today').length, cls: 'text-orange-600' },
-                  { label: 'Overdue',   val: invoices.filter(i=>i.status==='overdue').length,   cls: 'text-red-600' },
+                  { label: 'Paid',      key: 'paid',      val: invoices.filter(i=>i.status==='paid').length,      cls: 'text-green-600' },
+                  { label: 'Pending',   key: 'pending',   val: invoices.filter(i=>i.status==='pending').length,   cls: 'text-gray-600' },
+                  { label: 'Due today', key: 'due_today', val: invoices.filter(i=>i.status==='due_today').length, cls: 'text-orange-600' },
+                  { label: 'Overdue',   key: 'overdue',   val: invoices.filter(i=>i.status==='overdue').length,   cls: 'text-red-600' },
                 ].map(r => (
-                  <div key={r.label} className="flex justify-between items-center py-2 border-b border-gray-50 last:border-0">
+                  <div key={r.label} onClick={() => setKpiView('inv_' + r.key)} className="flex justify-between items-center py-2 border-b border-gray-50 last:border-0 cursor-pointer hover:bg-orange-50 px-1 rounded transition-colors">
                     <span className="text-sm text-gray-600">{r.label}</span>
                     <span className={`text-sm font-semibold ${r.cls}`}>{r.val}</span>
                   </div>
@@ -423,7 +486,7 @@ export default function Dashboard() {
                     const client = clients.find(c => c.id === inv.client_id)
                     return (
                       <tr key={inv.id} className="border-b border-gray-50 hover:bg-gray-50">
-                        <td className="px-4 py-3 font-medium">{client?.name || 'Unknown'}</td>
+                        <td className="px-4 py-3 font-medium">{client ? <a href={`/client/${client.id}`} className="hover:text-orange-600">{client.name}</a> : 'Unknown'}</td>
                         <td className="px-4 py-3 font-semibold">{formatRs(inv.amount)}</td>
                         <td className="px-4 py-3 text-gray-500">{new Date(inv.due_date).toLocaleDateString('en-IN', { day: 'numeric', month: 'short', year: 'numeric' })}</td>
                         <td className="px-4 py-3">{invoiceBadge(inv.status)}</td>
@@ -457,8 +520,10 @@ export default function Dashboard() {
                   {wishlist.map(c => (
                     <tr key={c.id} className="border-b border-gray-50 hover:bg-gray-50">
                       <td className="px-4 py-3">
-                        <div className="font-medium">{c.name}</div>
-                        <div className="text-xs text-gray-400">{c.industry} — {c.city}</div>
+                        <a href={`/client/${c.id}`} className="block">
+                          <div className="font-medium hover:text-orange-600">{c.name}</div>
+                          <div className="text-xs text-gray-400">{c.industry} — {c.city}</div>
+                        </a>
                       </td>
                       <td className="px-4 py-3 font-semibold">{formatRs(c.monthly_value)}</td>
                       <td className="px-4 py-3">{statusBadge(c.status)}</td>
@@ -471,8 +536,183 @@ export default function Dashboard() {
             </div>
           </>}
 
+          {/* DATA HYGIENE PAGE */}
+          {page === 'hygiene' && <>
+            <div className="mb-5">
+              <p className="text-xs text-gray-400 mb-1">Team accountability</p>
+              <h1 className="text-xl font-semibold">Data hygiene</h1>
+              <p className="text-sm text-gray-500 mt-0.5">{staleClients.length} clients have had no contact logged in over 7 days</p>
+            </div>
+            {Object.keys(staleByEmp).length === 0 ? (
+              <div className="bg-white border border-gray-100 rounded-xl p-8 text-center text-gray-400">All client records are up to date. Excellent discipline.</div>
+            ) : Object.entries(staleByEmp).sort((a,b) => b[1].length - a[1].length).map(([emp, list]) => (
+              <div key={emp} className="bg-white border border-gray-100 rounded-xl p-4 mb-3">
+                <div className="flex items-center justify-between mb-2">
+                  <button onClick={() => setEmpView(emp)} className="text-left">
+                    <span className="text-sm font-semibold hover:text-orange-600">{emp}</span>
+                    <span className="text-xs text-gray-400 ml-2">{EMP_INFO[emp]?.team} · {EMP_INFO[emp]?.id}</span>
+                  </button>
+                  <span className="text-xs font-semibold text-amber-700 bg-amber-100 rounded-full px-2.5 py-0.5">{list.length} overdue updates</span>
+                </div>
+                <div className="text-xs text-gray-500 mb-2">Likely cause: no interaction logged since last touchpoint. Follow up with {emp.split(' ')[0]} to confirm whether contact happened but was not recorded, or whether the client has genuinely not been engaged.</div>
+                {list.sort((a,b) => staleDays(b) - staleDays(a)).map(cl => (
+                  <a key={cl.id} href={`/client/${cl.id}`} className="flex justify-between items-center py-1.5 border-b border-gray-50 last:border-0 hover:bg-orange-50 px-1 rounded">
+                    <span className="text-sm text-gray-600 hover:text-orange-600">{cl.name}</span>
+                    <span className={`text-xs font-medium ${staleDays(cl) > 30 ? 'text-red-600' : 'text-amber-600'}`}>{staleDays(cl) === 9999 ? 'Never contacted' : `${staleDays(cl)}d since contact`}</span>
+                  </a>
+                ))}
+              </div>
+            ))}
+          </>}
+
+          {/* SETTINGS PAGE */}
+          {page === 'settings' && <>
+            <div className="mb-5">
+              <p className="text-xs text-gray-400 mb-1">Customisation</p>
+              <h1 className="text-xl font-semibold">Settings</h1>
+              <p className="text-sm text-gray-500 mt-0.5">Configure how metrics are calculated and displayed</p>
+            </div>
+            {[
+              { group: 'Display', items: ['Dark mode', 'Compact table rows', 'Show currency in lakhs', 'Show currency in crores', 'Show decimal precision', 'Highlight at-risk rows', 'Show client logos', 'Show contract countdown', 'Sticky table headers', 'Show revenue share column'] },
+              { group: 'Metrics', items: ['At-risk threshold (days)', 'Contract expiry warning (days)', 'Retention calculation period', 'Include wishlist in projections', 'Weight pipeline by stage', 'Auto-flag overdue invoices', 'Budget utilisation alerts', 'Average value excludes outliers', 'YoY growth comparison', 'Quarterly trend smoothing'] },
+              { group: 'Alerts & data', items: ['Daily summary email', 'WhatsApp alerts for at-risk', 'Weekly data hygiene report', 'Invoice due reminders', 'Contract renewal reminders', 'New client notifications', 'Team activity digest', 'Auto-archive lost clients', 'Require notes on status change', 'Export to Excel weekly'] },
+            ].map(g => (
+              <div key={g.group} className="bg-white border border-gray-100 rounded-xl p-4 mb-3">
+                <div className="text-sm font-semibold mb-3">{g.group}</div>
+                {g.items.map((label, i) => (
+                  <div key={label} className="flex justify-between items-center py-2 border-b border-gray-50 last:border-0">
+                    <span className="text-sm text-gray-600">{label}</span>
+                    <ToggleSwitch defaultOn={i % 3 !== 2} />
+                  </div>
+                ))}
+              </div>
+            ))}
+            <p className="text-xs text-gray-400 mt-2">Settings are illustrative in this demo. In production each toggle persists per user and adjusts live calculations.</p>
+          </>}
+
         </div>
       </div>
+
+      {/* KPI Breakdown Modal */}
+      {kpiView && (() => {
+        const Row = ({ name, right, href }: { name: string; right: React.ReactNode; href?: string }) => (
+          href ? <a href={href} className="flex justify-between items-center py-2 border-b border-gray-50 last:border-0 hover:bg-orange-50 px-1 rounded"><span className="text-sm text-gray-700 hover:text-orange-600">{name}</span><span className="text-sm font-medium">{right}</span></a>
+          : <div className="flex justify-between items-center py-2 border-b border-gray-50 last:border-0"><span className="text-sm text-gray-700">{name}</span><span className="text-sm font-medium">{right}</span></div>
+        )
+        let title = '', formula = '', summary = '', rows: React.ReactNode = null
+        if (kpiView === 'active') {
+          title = `Active clients — ${existing.length}`
+          formula = 'Count of all clients in the Existing segment'
+          summary = `${existing.filter(x=>x.status==='growing').length} growing, ${existing.filter(x=>x.status==='stable').length} stable, ${existing.filter(x=>x.status==='at_risk').length} at risk. Growth accounts are carrying the portfolio; protect the at-risk names first.`
+          rows = existing.map(x => <Row key={x.id} name={x.name} right={statusBadge(x.status)} href={`/client/${x.id}`} />)
+        } else if (kpiView === 'revenue') {
+          title = `Monthly revenue — ${formatRs(totalMonthly)}`
+          formula = 'Sum of monthly value across all existing clients'
+          const top = [...existing].sort((a,b)=>b.monthly_value-a.monthly_value)
+          summary = `Top 5 clients contribute ${Math.round(top.slice(0,5).reduce((s,x)=>s+x.monthly_value,0)/totalMonthly*100)}% of revenue. Concentration is ${top[0] ? Math.round(top[0].monthly_value/totalMonthly*100) : 0}% in ${top[0]?.name || ''} alone — diversification matters.`
+          rows = top.map(x => <Row key={x.id} name={x.name} right={<>{formatRs(x.monthly_value)} <span className="text-xs text-gray-400">({(x.monthly_value/totalMonthly*100).toFixed(1)}%)</span></>} href={`/client/${x.id}`} />)
+        } else if (kpiView === 'pipeline') {
+          title = `Pipeline value — ${formatRs(pipelineVal)}`
+          formula = 'Sum of estimated monthly value across all wish-list prospects'
+          summary = `${wishlist.filter(x=>x.status==='ready_to_sign').length} ready to sign, ${wishlist.filter(x=>x.status==='negotiating').length} negotiating. Closing just the ready-to-sign names adds ${formatRs(wishlist.filter(x=>x.status==='ready_to_sign').reduce((s,x)=>s+x.monthly_value,0))} per month.`
+          rows = [...wishlist].sort((a,b)=>b.monthly_value-a.monthly_value).map(x => <Row key={x.id} name={x.name} right={<>{formatRs(x.monthly_value)} {statusBadge(x.status)}</>} href={`/client/${x.id}`} />)
+        } else if (kpiView === 'winback') {
+          title = `Win-back opportunity — ${formatRs(winbackVal)}`
+          formula = 'Sum of last known monthly value across lapsed clients'
+          summary = `${winback.filter(x=>x.status==='meeting_booked'||x.status==='in_conversation').length} of ${winback.length} are already re-engaged. Recovering the top 3 alone returns ${formatRs([...winback].sort((a,b)=>b.monthly_value-a.monthly_value).slice(0,3).reduce((s,x)=>s+x.monthly_value,0))} per month.`
+          rows = [...winback].sort((a,b)=>b.monthly_value-a.monthly_value).map(x => <Row key={x.id} name={x.name} right={<>{formatRs(x.monthly_value)} {statusBadge(x.status)}</>} href={`/client/${x.id}`} />)
+        } else if (kpiView === 'at_risk') {
+          title = `At-risk clients — ${atRisk.length}`
+          formula = 'Existing clients flagged at-risk, prioritised by days since last contact'
+          summary = `Combined exposure of ${formatRs(atRisk.reduce((s,x)=>s+x.monthly_value,0))} per month. Every name here has gone over a month without contact — one call each this week converts this list back to stable.`
+          rows = [...atRisk].sort((a,b)=> (b.last_contact?0:1) - (a.last_contact?0:1) || new Date(a.last_contact||0).getTime() - new Date(b.last_contact||0).getTime()).map(x => {
+            const d = x.last_contact ? Math.floor((Date.now()-new Date(x.last_contact).getTime())/86400000) : null
+            return <Row key={x.id} name={x.name} right={<span className="text-red-600">{d === null ? 'Never contacted' : `${d}d ago`} · {formatRs(x.monthly_value)}</span>} href={`/client/${x.id}`} />
+          })
+        } else if (kpiView === 'avg') {
+          title = `Average client value — ${existing.length ? formatRs(Math.round(totalMonthly/existing.length)) : 'Rs 0'}`
+          formula = `Monthly revenue ${formatRs(totalMonthly)} ÷ ${existing.length} active clients`
+          summary = `${existing.filter(x=>x.monthly_value > totalMonthly/existing.length).length} clients sit above the average. Clients below the line are upsell candidates; those far above need retention insurance.`
+          rows = [...existing].sort((a,b)=>b.monthly_value-a.monthly_value).map(x => <Row key={x.id} name={x.name} right={<span className={x.monthly_value >= totalMonthly/existing.length ? 'text-green-700' : 'text-gray-500'}>{formatRs(x.monthly_value)} {x.monthly_value >= totalMonthly/existing.length ? '▲ above avg' : '▼ below avg'}</span>} href={`/client/${x.id}`} />)
+        } else if (kpiView === 'outstanding') {
+          title = `Outstanding invoices — ${formatRs(outstanding)}`
+          formula = 'Sum of all invoices not yet marked paid'
+          const unpaid = invoices.filter(i=>i.status!=='paid')
+          summary = `${unpaid.filter(i=>i.status==='overdue').length} overdue worth ${formatRs(unpaid.filter(i=>i.status==='overdue').reduce((s,i)=>s+i.amount,0))}. Chase overdue first — that cash is already earned.`
+          rows = unpaid.sort((a,b)=>b.amount-a.amount).map(inv => {
+            const cl = clients.find(x=>x.id===inv.client_id)
+            return <Row key={inv.id} name={cl?.name || 'Unknown'} right={<>{formatRs(inv.amount)} <span className={inv.status==='overdue'?'text-red-600 text-xs':'text-gray-400 text-xs'}>{inv.status.replace('_',' ')}</span></>} href={cl ? `/client/${cl.id}` : undefined} />
+          })
+        } else if (kpiView === 'retention') {
+          title = 'Retention rate — 87%'
+          formula = 'Clients retained over trailing 12 months ÷ clients at period start'
+          summary = `Of the portfolio a year ago, 87% remain active — up 3% on last year. The ${winback.length} names in win-back are the lost 13%; recovering even a third pushes retention past 90%.`
+          rows = <>
+            <Row name="Growing" right={<span className="text-green-700">{existing.filter(x=>x.status==='growing').length} clients</span>} />
+            <Row name="Stable" right={<span className="text-blue-700">{existing.filter(x=>x.status==='stable').length} clients</span>} />
+            <Row name="At risk" right={<span className="text-red-600">{existing.filter(x=>x.status==='at_risk').length} clients</span>} />
+            <Row name="Lost (win-back pool)" right={<span className="text-gray-500">{winback.length} clients</span>} />
+          </>
+        } else if (kpiView.startsWith('inv_')) {
+          const st = kpiView.slice(4)
+          const list = invoices.filter(i=>i.status===st)
+          title = `${st.replace('_',' ').replace(/^./, ch=>ch.toUpperCase())} invoices — ${list.length}`
+          formula = `All invoices currently marked ${st.replace('_',' ')}`
+          summary = `Total value ${formatRs(list.reduce((s,i)=>s+i.amount,0))}.`
+          rows = list.sort((a,b)=>b.amount-a.amount).map(inv => {
+            const cl = clients.find(x=>x.id===inv.client_id)
+            return <Row key={inv.id} name={cl?.name || 'Unknown'} right={<>{formatRs(inv.amount)} <span className="text-xs text-gray-400">due {new Date(inv.due_date).toLocaleDateString('en-IN',{day:'numeric',month:'short'})}</span></>} href={cl ? `/client/${cl.id}` : undefined} />
+          })
+        }
+        return (
+          <div className="fixed inset-0 z-50 flex items-center justify-center" style={{ background: 'rgba(0,0,0,0.4)' }} onClick={() => setKpiView(null)}>
+            <div className="bg-white rounded-2xl p-6 w-full max-w-lg mx-4 shadow-xl max-h-[80vh] overflow-y-auto" onClick={e => e.stopPropagation()}>
+              <h2 className="text-lg font-semibold">{title}</h2>
+              <p className="text-xs text-gray-400 mt-1">Formula: {formula}</p>
+              <div className="text-sm rounded-lg p-3 my-3" style={{ background: '#FDF1E7', color: '#B34E00' }}>{summary}</div>
+              <div>{rows}</div>
+              <button onClick={() => setKpiView(null)} className="mt-4 w-full px-4 py-2 text-sm font-medium border border-gray-200 rounded-lg text-gray-600 hover:bg-gray-50">Close</button>
+            </div>
+          </div>
+        )
+      })()}
+
+      {/* Employee Modal */}
+      {empView && (() => {
+        const info = EMP_INFO[empView]
+        const list = empClients(empView)
+        const stale = list.filter(cl => staleDays(cl) > 7 && cl.segment !== 'winback')
+        const value = list.filter(cl=>cl.segment==='existing').reduce((s,cl)=>s+cl.monthly_value,0)
+        return (
+          <div className="fixed inset-0 z-50 flex items-center justify-center" style={{ background: 'rgba(0,0,0,0.4)' }} onClick={() => setEmpView(null)}>
+            <div className="bg-white rounded-2xl p-6 w-full max-w-md mx-4 shadow-xl max-h-[80vh] overflow-y-auto" onClick={e => e.stopPropagation()}>
+              <div className="flex items-center gap-3 mb-4">
+                <div className="w-12 h-12 rounded-xl flex items-center justify-center text-white font-bold" style={{ background: '#E8650D' }}>{empView.split(' ').map(w=>w[0]).join('')}</div>
+                <div>
+                  <h2 className="text-lg font-semibold">{empView}</h2>
+                  <p className="text-xs text-gray-400">{info?.id} · {info?.team} · {info?.role}</p>
+                </div>
+              </div>
+              <div className="grid grid-cols-3 gap-2 mb-4">
+                <div className="bg-gray-50 rounded-lg p-3 text-center"><div className="text-lg font-semibold">{list.length}</div><div className="text-xs text-gray-400">Clients</div></div>
+                <div className="bg-gray-50 rounded-lg p-3 text-center"><div className="text-lg font-semibold">{formatRs(value)}</div><div className="text-xs text-gray-400">Portfolio /mo</div></div>
+                <div className="bg-gray-50 rounded-lg p-3 text-center"><div className={`text-lg font-semibold ${stale.length ? 'text-amber-600' : 'text-green-700'}`}>{stale.length}</div><div className="text-xs text-gray-400">Overdue updates</div></div>
+              </div>
+              <div className="text-sm rounded-lg p-3 mb-3" style={{ background: '#FDF1E7', color: '#B34E00' }}>
+                {empView.split(' ')[0]} manages {list.length} accounts worth {formatRs(value)} monthly. {stale.length === 0 ? 'All records are current — strong data discipline.' : `${stale.length} client record${stale.length>1?'s':''} ha${stale.length>1?'ve':'s'} not been updated in over a week — follow up on logging discipline.`}
+              </div>
+              <div className="text-xs text-gray-400 uppercase tracking-wider font-medium mb-1">Assigned clients</div>
+              {list.map(cl => (
+                <a key={cl.id} href={`/client/${cl.id}`} className="flex justify-between items-center py-1.5 border-b border-gray-50 last:border-0 hover:bg-orange-50 px-1 rounded">
+                  <span className="text-sm text-gray-700 hover:text-orange-600">{cl.name}</span>
+                  <span className="text-xs text-gray-400">{cl.segment}</span>
+                </a>
+              ))}
+              <button onClick={() => setEmpView(null)} className="mt-4 w-full px-4 py-2 text-sm font-medium border border-gray-200 rounded-lg text-gray-600 hover:bg-gray-50">Close</button>
+            </div>
+          </div>
+        )
+      })()}
 
       {/* Add Client Modal */}
       {showAdd && (
