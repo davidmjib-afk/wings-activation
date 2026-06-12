@@ -64,7 +64,35 @@ export default function Dashboard() {
   const [tab, setTab] = useState<Tab>('existing')
   const [page, setPage] = useState<Page>('dashboard')
   const [activeNav, setActiveNav] = useState('dashboard')
+  const [search, setSearch] = useState('')
+  const [showAdd, setShowAdd] = useState(false)
+  const [saving, setSaving] = useState(false)
+  const [form, setForm] = useState({ name: '', industry: '', city: '', segment: 'existing', status: 'stable', monthly_value: '', notes: '' })
   const router = useRouter()
+
+  async function reload() {
+    const [{ data: c }, { data: i }] = await Promise.all([
+      supabase.from('clients').select('*, profiles(full_name)').order('monthly_value', { ascending: false }),
+      supabase.from('invoices').select('*'),
+    ])
+    setClients((c as Client[]) || [])
+    setInvoices((i as Invoice[]) || [])
+  }
+
+  async function addClient() {
+    if (!form.name) return
+    setSaving(true)
+    await supabase.from('clients').insert({
+      name: form.name, industry: form.industry || null, city: form.city || null,
+      segment: form.segment, status: form.status,
+      monthly_value: Number(form.monthly_value) || 0,
+      notes: form.notes || null,
+      last_contact: new Date().toISOString().slice(0, 10),
+    })
+    await reload()
+    setSaving(false); setShowAdd(false)
+    setForm({ name: '', industry: '', city: '', segment: 'existing', status: 'stable', monthly_value: '', notes: '' })
+  }
 
   useEffect(() => {
     async function load() {
@@ -91,7 +119,10 @@ export default function Dashboard() {
 
   const navGo = (navId: string, pg: Page) => { setActiveNav(navId); setPage(pg) }
 
-  const segClients = tab === 'existing' ? existing : tab === 'wishlist' ? wishlist : winback
+  const segBase = tab === 'existing' ? existing : tab === 'wishlist' ? wishlist : winback
+  const segClients = search
+    ? segBase.filter(c => (c.name + ' ' + (c.industry||'') + ' ' + (c.city||'')).toLowerCase().includes(search.toLowerCase()))
+    : segBase
 
   if (loading) return (
     <div className="flex items-center justify-center h-screen">
@@ -235,6 +266,16 @@ export default function Dashboard() {
                     {t === 'existing' ? `Existing (${existing.length})` : t === 'wishlist' ? `Wish list (${wishlist.length})` : `Win back (${winback.length})`}
                   </button>
                 ))}
+              </div>
+              <div className="flex items-center gap-2">
+                <input value={search} onChange={e => setSearch(e.target.value)}
+                  placeholder="Search clients..."
+                  className="px-3 py-1.5 text-sm border border-gray-200 rounded-lg bg-white focus:outline-none focus:border-orange-400 w-48" />
+                <button onClick={() => setShowAdd(true)}
+                  className="px-4 py-1.5 rounded-lg text-sm font-medium text-white"
+                  style={{ background: '#E8650D' }}>
+                  + Add client
+                </button>
               </div>
             </div>
 
@@ -432,6 +473,64 @@ export default function Dashboard() {
 
         </div>
       </div>
+
+      {/* Add Client Modal */}
+      {showAdd && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center" style={{ background: 'rgba(0,0,0,0.4)' }} onClick={() => setShowAdd(false)}>
+          <div className="bg-white rounded-2xl p-6 w-full max-w-md mx-4 shadow-xl" onClick={e => e.stopPropagation()}>
+            <h2 className="text-lg font-semibold mb-4">Add new client</h2>
+            <div className="space-y-3">
+              <input value={form.name} onChange={e => setForm({ ...form, name: e.target.value })}
+                placeholder="Client name *" className="w-full px-3 py-2 text-sm border border-gray-200 rounded-lg focus:outline-none focus:border-orange-400" />
+              <div className="grid grid-cols-2 gap-3">
+                <input value={form.industry} onChange={e => setForm({ ...form, industry: e.target.value })}
+                  placeholder="Industry" className="px-3 py-2 text-sm border border-gray-200 rounded-lg focus:outline-none focus:border-orange-400" />
+                <input value={form.city} onChange={e => setForm({ ...form, city: e.target.value })}
+                  placeholder="City" className="px-3 py-2 text-sm border border-gray-200 rounded-lg focus:outline-none focus:border-orange-400" />
+              </div>
+              <div className="grid grid-cols-2 gap-3">
+                <select value={form.segment} onChange={e => setForm({ ...form, segment: e.target.value, status: e.target.value === 'existing' ? 'stable' : e.target.value === 'wishlist' ? 'first_meeting' : 'not_contacted' })}
+                  className="px-3 py-2 text-sm border border-gray-200 rounded-lg bg-white focus:outline-none focus:border-orange-400">
+                  <option value="existing">Existing client</option>
+                  <option value="wishlist">Wish list prospect</option>
+                  <option value="winback">Win back</option>
+                </select>
+                <select value={form.status} onChange={e => setForm({ ...form, status: e.target.value })}
+                  className="px-3 py-2 text-sm border border-gray-200 rounded-lg bg-white focus:outline-none focus:border-orange-400">
+                  {form.segment === 'existing' && <>
+                    <option value="growing">Growing</option>
+                    <option value="stable">Stable</option>
+                    <option value="at_risk">At risk</option>
+                  </>}
+                  {form.segment === 'wishlist' && <>
+                    <option value="intro_made">Intro made</option>
+                    <option value="first_meeting">First meeting</option>
+                    <option value="negotiating">Negotiating</option>
+                    <option value="ready_to_sign">Ready to sign</option>
+                  </>}
+                  {form.segment === 'winback' && <>
+                    <option value="not_contacted">Not contacted</option>
+                    <option value="in_conversation">In conversation</option>
+                    <option value="meeting_booked">Meeting booked</option>
+                  </>}
+                </select>
+              </div>
+              <input value={form.monthly_value} onChange={e => setForm({ ...form, monthly_value: e.target.value })}
+                placeholder="Monthly value (Rs)" type="number" className="w-full px-3 py-2 text-sm border border-gray-200 rounded-lg focus:outline-none focus:border-orange-400" />
+              <textarea value={form.notes} onChange={e => setForm({ ...form, notes: e.target.value })}
+                placeholder="Notes" rows={2} className="w-full px-3 py-2 text-sm border border-gray-200 rounded-lg focus:outline-none focus:border-orange-400" />
+            </div>
+            <div className="flex gap-3 mt-5">
+              <button onClick={() => setShowAdd(false)} className="flex-1 px-4 py-2 text-sm font-medium border border-gray-200 rounded-lg text-gray-600 hover:bg-gray-50">Cancel</button>
+              <button onClick={addClient} disabled={saving || !form.name}
+                className="flex-1 px-4 py-2 text-sm font-medium text-white rounded-lg disabled:opacity-50"
+                style={{ background: '#E8650D' }}>
+                {saving ? 'Saving...' : 'Add client'}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   )
 }

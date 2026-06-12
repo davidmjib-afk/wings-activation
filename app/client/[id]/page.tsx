@@ -46,6 +46,42 @@ export default function ClientDetail() {
   const [allClients, setAllClients] = useState<Client[]>([])
   const [loading, setLoading] = useState(true)
   const [activeTab, setActiveTab] = useState<'overview' | 'invoices' | 'proposals' | 'metrics'>('overview')
+  const [logging, setLogging] = useState(false)
+  const [showInv, setShowInv] = useState(false)
+  const [invForm, setInvForm] = useState({ amount: '', due_date: '', status: 'pending' })
+  const [savingInv, setSavingInv] = useState(false)
+
+  async function reloadAll() {
+    const [{ data: c }, { data: inv }] = await Promise.all([
+      supabase.from('clients').select('*, profiles(full_name, email, role)').eq('id', params.id).single(),
+      supabase.from('invoices').select('*').eq('client_id', params.id).order('due_date', { ascending: false }),
+    ])
+    setClient(c as Client)
+    setInvoices((inv as Invoice[]) || [])
+  }
+
+  async function logContact() {
+    setLogging(true)
+    const today = new Date().toISOString().slice(0, 10)
+    const updates: Record<string, any> = { last_contact: today }
+    if (client?.status === 'at_risk') updates.status = 'stable'
+    await supabase.from('clients').update(updates).eq('id', params.id)
+    await reloadAll()
+    setLogging(false)
+  }
+
+  async function addInvoice() {
+    if (!invForm.amount || !invForm.due_date) return
+    setSavingInv(true)
+    await supabase.from('invoices').insert({
+      client_id: params.id, amount: Number(invForm.amount),
+      due_date: invForm.due_date, status: invForm.status,
+      paid_date: invForm.status === 'paid' ? new Date().toISOString().slice(0, 10) : null,
+    })
+    await reloadAll()
+    setSavingInv(false); setShowInv(false)
+    setInvForm({ amount: '', due_date: '', status: 'pending' })
+  }
 
   useEffect(() => {
     async function load() {
@@ -149,6 +185,16 @@ export default function ClientDetail() {
               </div>
             </div>
             <div className="flex items-center gap-3">
+              <button onClick={logContact} disabled={logging}
+                className="px-4 py-1.5 rounded-lg text-sm font-medium border transition-colors disabled:opacity-50"
+                style={{ borderColor: '#E8650D', color: '#E8650D' }}>
+                {logging ? 'Logging...' : 'Log contact today'}
+              </button>
+              <button onClick={() => setShowInv(true)}
+                className="px-4 py-1.5 rounded-lg text-sm font-medium text-white"
+                style={{ background: '#E8650D' }}>
+                + Invoice
+              </button>
               <span className="px-3 py-1.5 rounded-full text-sm font-medium" style={{ background: st.bg, color: st.color }}>
                 {st.label}
               </span>
@@ -468,6 +514,36 @@ export default function ClientDetail() {
           </div>
         )}
       </div>
+
+      {/* Add Invoice Modal */}
+      {showInv && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center" style={{ background: 'rgba(0,0,0,0.4)' }} onClick={() => setShowInv(false)}>
+          <div className="bg-white rounded-2xl p-6 w-full max-w-sm mx-4 shadow-xl" onClick={e => e.stopPropagation()}>
+            <h2 className="text-lg font-semibold mb-4">Add invoice — {client.name}</h2>
+            <div className="space-y-3">
+              <input value={invForm.amount} onChange={e => setInvForm({ ...invForm, amount: e.target.value })}
+                placeholder="Amount (Rs)" type="number" className="w-full px-3 py-2 text-sm border border-gray-200 rounded-lg focus:outline-none focus:border-orange-400" />
+              <input value={invForm.due_date} onChange={e => setInvForm({ ...invForm, due_date: e.target.value })}
+                type="date" className="w-full px-3 py-2 text-sm border border-gray-200 rounded-lg focus:outline-none focus:border-orange-400" />
+              <select value={invForm.status} onChange={e => setInvForm({ ...invForm, status: e.target.value })}
+                className="w-full px-3 py-2 text-sm border border-gray-200 rounded-lg bg-white focus:outline-none focus:border-orange-400">
+                <option value="pending">Pending</option>
+                <option value="paid">Paid</option>
+                <option value="overdue">Overdue</option>
+                <option value="due_today">Due today</option>
+              </select>
+            </div>
+            <div className="flex gap-3 mt-5">
+              <button onClick={() => setShowInv(false)} className="flex-1 px-4 py-2 text-sm font-medium border border-gray-200 rounded-lg text-gray-600 hover:bg-gray-50">Cancel</button>
+              <button onClick={addInvoice} disabled={savingInv || !invForm.amount || !invForm.due_date}
+                className="flex-1 px-4 py-2 text-sm font-medium text-white rounded-lg disabled:opacity-50"
+                style={{ background: '#E8650D' }}>
+                {savingInv ? 'Saving...' : 'Add invoice'}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   )
 }
