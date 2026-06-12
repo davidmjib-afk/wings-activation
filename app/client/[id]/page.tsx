@@ -1,33 +1,36 @@
 'use client'
-import { useEffect, useState } from 'react'
+import { useCallback, useEffect, useState } from 'react'
 import { useParams, useRouter } from 'next/navigation'
-import { supabase, Client, Invoice, Proposal } from '@/lib/supabase'
+import { Client, Invoice, Proposal } from '@/lib/supabase'
 import {
-  ArrowLeft, TrendingUp, TrendingDown, AlertTriangle,
-  CheckCircle, Clock, DollarSign, FileText, Phone,
-  Mail, Calendar, User, Building, MapPin, Activity
-} from 'lucide-react'
+  getClientDetail, createInvoice, logContactToday,
+  effectiveInvoiceStatus, daysSince, empInfo,
+} from '@/lib/data'
+import { ArrowLeft, AlertTriangle, User, Building, MapPin } from 'lucide-react'
 
-const formatRs = (n: number) =>
-  'Rs ' + (n >= 100000
-    ? (n / 100000).toFixed(1) + 'L'
-    : n >= 1000
-    ? (n / 1000).toFixed(0) + 'K'
-    : n.toLocaleString('en-IN'))
+// Client-page formatter keeps its K notation (matches existing design).
+const formatRs = (n: number | null | undefined) => {
+  const v = n ?? 0
+  return 'Rs ' + (v >= 100000
+    ? (v / 100000).toFixed(1) + 'L'
+    : v >= 1000
+      ? (v / 1000).toFixed(0) + 'K'
+      : v.toLocaleString('en-IN'))
+}
 
 const statusConfig: Record<string, { label: string; color: string; bg: string }> = {
-  growing:         { label: 'Growing',          color: '#27500A', bg: '#EAF3DE' },
-  stable:          { label: 'Stable',            color: '#185FA5', bg: '#E6F1FB' },
-  at_risk:         { label: 'At risk',           color: '#A32D2D', bg: '#FCEBEB' },
-  lost:            { label: 'Lost',              color: '#5F5E5A', bg: '#F1EFE8' },
-  negotiating:     { label: 'Negotiating',       color: '#854F0B', bg: '#FAEEDA' },
-  ready_to_sign:   { label: 'Ready to sign',     color: '#27500A', bg: '#EAF3DE' },
-  first_meeting:   { label: 'First meeting',     color: '#5F5E5A', bg: '#F1EFE8' },
-  intro_made:      { label: 'Intro made',        color: '#185FA5', bg: '#E6F1FB' },
-  in_conversation: { label: 'In conversation',   color: '#854F0B', bg: '#FAEEDA' },
-  meeting_booked:  { label: 'Meeting booked',    color: '#27500A', bg: '#EAF3DE' },
-  not_contacted:   { label: 'Not contacted',     color: '#A32D2D', bg: '#FCEBEB' },
-  prospect:        { label: 'Proposal sent',     color: '#185FA5', bg: '#E6F1FB' },
+  growing:         { label: 'Growing',         color: '#27500A', bg: '#EAF3DE' },
+  stable:          { label: 'Stable',          color: '#185FA5', bg: '#E6F1FB' },
+  at_risk:         { label: 'At risk',         color: '#A32D2D', bg: '#FCEBEB' },
+  lost:            { label: 'Lost',            color: '#5F5E5A', bg: '#F1EFE8' },
+  negotiating:     { label: 'Negotiating',     color: '#854F0B', bg: '#FAEEDA' },
+  ready_to_sign:   { label: 'Ready to sign',   color: '#27500A', bg: '#EAF3DE' },
+  first_meeting:   { label: 'First meeting',   color: '#5F5E5A', bg: '#F1EFE8' },
+  intro_made:      { label: 'Intro made',      color: '#185FA5', bg: '#E6F1FB' },
+  in_conversation: { label: 'In conversation', color: '#854F0B', bg: '#FAEEDA' },
+  meeting_booked:  { label: 'Meeting booked',  color: '#27500A', bg: '#EAF3DE' },
+  not_contacted:   { label: 'Not contacted',   color: '#A32D2D', bg: '#FCEBEB' },
+  prospect:        { label: 'Proposal sent',   color: '#185FA5', bg: '#E6F1FB' },
 }
 
 const invoiceConfig: Record<string, { label: string; color: string; bg: string }> = {
@@ -37,106 +40,124 @@ const invoiceConfig: Record<string, { label: string; color: string; bg: string }
   pending:   { label: 'Pending',   color: '#5F5E5A', bg: '#F1EFE8' },
 }
 
+function Modal({ onClose, label, children }: { onClose: () => void; label: string; children: React.ReactNode }) {
+  useEffect(() => {
+    const handler = (e: KeyboardEvent) => { if (e.key === 'Escape') onClose() }
+    window.addEventListener('keydown', handler)
+    return () => window.removeEventListener('keydown', handler)
+  }, [onClose])
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center" style={{ background: 'rgba(0,0,0,0.4)' }} onClick={onClose}>
+      <div role="dialog" aria-modal="true" aria-label={label}
+        className="bg-white rounded-2xl p-6 w-full max-w-sm mx-4 shadow-xl" onClick={e => e.stopPropagation()}>
+        {children}
+      </div>
+    </div>
+  )
+}
+
+function SkeletonProfile() {
+  return (
+    <div className="max-w-6xl mx-auto px-6 py-6 animate-pulse" aria-busy="true" aria-label="Loading client profile">
+      <div className="h-4 w-36 bg-gray-200 rounded mb-5" />
+      <div className="h-44 bg-gray-100 rounded-2xl mb-5" />
+      <div className="h-8 w-96 bg-gray-100 rounded-full mb-5" />
+      <div className="grid grid-cols-4 gap-3">
+        {[...Array(4)].map((_, i) => <div key={i} className="h-24 bg-gray-100 rounded-xl" />)}
+      </div>
+    </div>
+  )
+}
+
 export default function ClientDetail() {
   const params = useParams()
   const router = useRouter()
+  const clientId = String(params.id)
   const [client, setClient] = useState<Client | null>(null)
   const [invoices, setInvoices] = useState<Invoice[]>([])
   const [proposals, setProposals] = useState<Proposal[]>([])
-  const [allClients, setAllClients] = useState<Client[]>([])
+  const [portfolioTotal, setPortfolioTotal] = useState(0)
   const [loading, setLoading] = useState(true)
+  const [loadError, setLoadError] = useState<string | null>(null)
+  const [actionError, setActionError] = useState<string | null>(null)
   const [activeTab, setActiveTab] = useState<'overview' | 'invoices' | 'proposals' | 'metrics'>('overview')
   const [logging, setLogging] = useState(false)
   const [showInv, setShowInv] = useState(false)
   const [invForm, setInvForm] = useState({ amount: '', due_date: '', status: 'pending' })
+  const [invError, setInvError] = useState<string | null>(null)
   const [savingInv, setSavingInv] = useState(false)
 
-  async function reloadAll() {
-    const [{ data: c }, { data: inv }] = await Promise.all([
-      supabase.from('clients').select('*, profiles(full_name, email, role)').eq('id', params.id).single(),
-      supabase.from('invoices').select('*').eq('client_id', params.id).order('due_date', { ascending: false }),
-    ])
-    setClient(c as Client)
-    setInvoices((inv as Invoice[]) || [])
-  }
+  const reload = useCallback(async () => {
+    setLoadError(null)
+    const res = await getClientDetail(clientId)
+    if (res.error) { setLoadError(res.error); setLoading(false); return }
+    setClient(res.data.client)
+    setInvoices(res.data.invoices.map(i => ({ ...i, status: effectiveInvoiceStatus(i) })))
+    setProposals(res.data.proposals)
+    setPortfolioTotal(res.data.portfolioMonthlyTotal)
+    setLoading(false)
+  }, [clientId])
+
+  useEffect(() => { reload() }, [reload])
 
   async function logContact() {
+    setActionError(null)
     setLogging(true)
-    const today = new Date().toISOString().slice(0, 10)
-    const updates: Record<string, any> = { last_contact: today }
-    if (client?.status === 'at_risk') updates.status = 'stable'
-    await supabase.from('clients').update(updates).eq('id', params.id)
-    await reloadAll()
+    const res = await logContactToday(clientId, client?.status)
+    if (res.error) setActionError(res.error)
+    else await reload()
     setLogging(false)
   }
 
   async function addInvoice() {
-    if (!invForm.amount || !invForm.due_date) return
+    setInvError(null)
     setSavingInv(true)
-    await supabase.from('invoices').insert({
-      client_id: params.id, amount: Number(invForm.amount),
-      due_date: invForm.due_date, status: invForm.status,
-      paid_date: invForm.status === 'paid' ? new Date().toISOString().slice(0, 10) : null,
-    })
-    await reloadAll()
-    setSavingInv(false); setShowInv(false)
+    const res = await createInvoice({ client_id: clientId, ...invForm })
+    setSavingInv(false)
+    if (res.error) { setInvError(res.error); return }
+    await reload()
+    setShowInv(false)
     setInvForm({ amount: '', due_date: '', status: 'pending' })
   }
 
-  useEffect(() => {
-    async function load() {
-      const [{ data: c }, { data: inv }, { data: prop }, { data: all }] = await Promise.all([
-        supabase.from('clients').select('*, profiles(full_name, email, role)').eq('id', params.id).single(),
-        supabase.from('invoices').select('*').eq('client_id', params.id).order('due_date', { ascending: false }),
-        supabase.from('proposals').select('*').eq('client_id', params.id).order('created_at', { ascending: false }),
-        supabase.from('clients').select('monthly_value, segment').eq('segment', 'existing'),
-      ])
-      setClient(c as Client)
-      setInvoices((inv as Invoice[]) || [])
-      setProposals((prop as Proposal[]) || [])
-      setAllClients((all as Client[]) || [])
-      setLoading(false)
-    }
-    load()
-  }, [params.id])
+  if (loading) return <SkeletonProfile />
 
-  if (loading) return (
+  if (loadError) return (
     <div className="flex items-center justify-center h-screen">
-      <div className="text-center">
-        <div className="w-8 h-8 border-2 rounded-full animate-spin mx-auto mb-3" style={{ borderColor: '#E8650D', borderTopColor: 'transparent' }} />
-        <p className="text-sm text-gray-500">Loading client profile...</p>
+      <div className="text-center max-w-sm">
+        <AlertTriangle size={28} className="mx-auto mb-3" style={{ color: '#E8650D' }} />
+        <p className="text-sm font-medium text-gray-800 mb-1">Couldn&apos;t load this client</p>
+        <p className="text-xs text-gray-500 mb-4">{loadError}</p>
+        <button onClick={() => { setLoading(true); reload() }} className="px-4 py-2 text-sm font-medium text-white rounded-lg" style={{ background: '#E8650D' }}>Try again</button>
       </div>
     </div>
   )
 
   if (!client) return (
-    <div className="flex items-center justify-center h-screen">
-      <p className="text-gray-500">Client not found.</p>
+    <div className="flex flex-col items-center justify-center h-screen gap-3">
+      <p className="text-gray-500">Client not found — it may have been deleted.</p>
+      <a href="/" className="text-sm font-medium" style={{ color: '#E8650D' }}>Back to dashboard</a>
     </div>
   )
 
-  const daysSince = (date: string | null) => {
-    if (!date) return null
-    return Math.floor((Date.now() - new Date(date).getTime()) / 86400000)
-  }
-
-  const totalBilled = invoices.reduce((s, i) => s + i.amount, 0)
-  const totalPaid = invoices.filter(i => i.status === 'paid').reduce((s, i) => s + i.amount, 0)
-  const totalOutstanding = invoices.filter(i => i.status !== 'paid').reduce((s, i) => s + i.amount, 0)
-  const totalProposalValue = proposals.reduce((s, p) => s + p.value, 0)
+  const totalBilled = invoices.reduce((s, i) => s + (i.amount ?? 0), 0)
+  const totalPaid = invoices.filter(i => i.status === 'paid').reduce((s, i) => s + (i.amount ?? 0), 0)
+  const totalOutstanding = invoices.filter(i => i.status !== 'paid').reduce((s, i) => s + (i.amount ?? 0), 0)
+  const totalProposalValue = proposals.reduce((s, p) => s + (p.value ?? 0), 0)
   const signedProposals = proposals.filter(p => p.status === 'signed')
-  const totalSigned = signedProposals.reduce((s, p) => s + p.value, 0)
-  const totalSpend = proposals.reduce((s, p) => s + (p.actual_spend || 0), 0)
-  const totalBudget = proposals.reduce((s, p) => s + (p.campaign_budget || 0), 0)
+  const totalSigned = signedProposals.reduce((s, p) => s + (p.value ?? 0), 0)
+  const totalSpend = proposals.reduce((s, p) => s + (p.actual_spend ?? 0), 0)
+  const totalBudget = proposals.reduce((s, p) => s + (p.campaign_budget ?? 0), 0)
   const budgetUtilisation = totalBudget > 0 ? Math.round((totalSpend / totalBudget) * 100) : 0
-  const annualisedValue = client.monthly_value * 12
-  const totalMonthlyAll = allClients.reduce((s, c) => s + c.monthly_value, 0)
-  const revenueShare = totalMonthlyAll > 0 ? ((client.monthly_value / totalMonthlyAll) * 100).toFixed(1) : '0'
+  const monthlyValue = client.monthly_value ?? 0
+  const annualisedValue = monthlyValue * 12
+  const revenueShare = portfolioTotal > 0 ? ((monthlyValue / portfolioTotal) * 100).toFixed(1) : '0'
   const contractDaysLeft = client.contract_end
     ? Math.floor((new Date(client.contract_end).getTime() - Date.now()) / 86400000)
     : null
   const lastContactDays = daysSince(client.last_contact)
   const st = statusConfig[client.status] || statusConfig['stable']
+  const emp = empInfo(client.profiles)
 
   const Metric = ({ label, value, sub, color }: { label: string; value: string; sub?: string; color?: string }) => (
     <div className="bg-white border border-gray-100 rounded-xl p-4">
@@ -165,6 +186,10 @@ export default function ClientDetail() {
           <ArrowLeft size={16} /> Back to dashboard
         </button>
 
+        {actionError && (
+          <div role="alert" className="text-sm text-red-700 bg-red-50 border border-red-200 rounded-xl px-4 py-3 mb-4">{actionError}</div>
+        )}
+
         {/* Client header */}
         <div className="bg-white border border-gray-100 rounded-2xl p-6 mb-5">
           <div className="flex items-start justify-between">
@@ -176,11 +201,11 @@ export default function ClientDetail() {
               <div>
                 <h1 className="text-2xl font-semibold text-gray-900">{client.name}</h1>
                 <div className="flex items-center gap-3 mt-1.5 flex-wrap">
-                  <span className="flex items-center gap-1 text-sm text-gray-500"><Building size={13} />{client.industry}</span>
-                  <span className="flex items-center gap-1 text-sm text-gray-500"><MapPin size={13} />{client.city}</span>
-                  {client.profiles && (
-                    <span className="flex items-center gap-1 text-sm text-gray-500"><User size={13} />{(client.profiles as any).full_name}
-                      <span className="text-xs text-gray-400">({({'Priya Rajan':'Team North · WG-EMP-002','Arjun Mehta':'Team West · WG-EMP-003','Rahul Sharma':'Team South · WG-EMP-004','Sneha Kapoor':'Team East · WG-EMP-005','Arun Samuel':'Leadership · WG-EMP-001'} as Record<string,string>)[(client.profiles as any).full_name] || 'Team'})</span>
+                  {client.industry && <span className="flex items-center gap-1 text-sm text-gray-500"><Building size={13} />{client.industry}</span>}
+                  {client.city && <span className="flex items-center gap-1 text-sm text-gray-500"><MapPin size={13} />{client.city}</span>}
+                  {emp.name && (
+                    <span className="flex items-center gap-1 text-sm text-gray-500"><User size={13} />{emp.name}
+                      <span className="text-xs text-gray-400">({emp.team} · {emp.id})</span>
                     </span>
                   )}
                 </div>
@@ -214,7 +239,7 @@ export default function ClientDetail() {
               <div className="text-xs text-gray-400 mt-0.5">Annualised value</div>
             </div>
             <div className="text-center">
-              <div className={`text-lg font-semibold ${lastContactDays && lastContactDays > 30 ? 'text-red-600' : 'text-gray-900'}`}>
+              <div className={`text-lg font-semibold ${lastContactDays !== null && lastContactDays > 30 ? 'text-red-600' : 'text-gray-900'}`}>
                 {lastContactDays !== null ? `${lastContactDays}d ago` : 'Never'}
               </div>
               <div className="text-xs text-gray-400 mt-0.5">Last contact</div>
@@ -230,8 +255,8 @@ export default function ClientDetail() {
               <div className="text-xs text-gray-400 mt-0.5">Revenue share</div>
             </div>
             <div className="text-center">
-              <div className={`text-lg font-semibold ${budgetUtilisation > 90 ? 'text-amber-600' : budgetUtilisation < 30 ? 'text-red-500' : 'text-gray-900'}`}>
-                {budgetUtilisation}%
+              <div className={`text-lg font-semibold ${budgetUtilisation > 90 ? 'text-amber-600' : budgetUtilisation < 30 && totalBudget > 0 ? 'text-red-500' : 'text-gray-900'}`}>
+                {totalBudget > 0 ? `${budgetUtilisation}%` : '—'}
               </div>
               <div className="text-xs text-gray-400 mt-0.5">Budget utilised</div>
             </div>
@@ -243,7 +268,7 @@ export default function ClientDetail() {
           <div className="flex items-start gap-3 rounded-xl p-4 mb-5 border" style={{ background: '#FCEBEB', borderColor: '#E24B4A' }}>
             <AlertTriangle size={18} className="text-red-600 flex-shrink-0 mt-0.5" />
             <div className="text-sm text-red-700">
-              <strong>This client is at risk.</strong> Last contacted {lastContactDays} days ago.
+              <strong>This client is at risk.</strong> {lastContactDays !== null ? `Last contacted ${lastContactDays} days ago.` : 'No contact has ever been logged.'}
               {contractDaysLeft !== null && contractDaysLeft < 90 && ` Contract expires in ${contractDaysLeft} days.`}
               {' '}Immediate outreach recommended.
             </div>
@@ -251,9 +276,9 @@ export default function ClientDetail() {
         )}
 
         {/* Tabs */}
-        <div className="flex gap-2 mb-5">
+        <div className="flex gap-2 mb-5" role="tablist" aria-label="Client profile sections">
           {(['overview', 'invoices', 'proposals', 'metrics'] as const).map(t => (
-            <button key={t} onClick={() => setActiveTab(t)}
+            <button key={t} role="tab" aria-selected={activeTab === t} onClick={() => setActiveTab(t)}
               className="px-5 py-2 rounded-full text-sm font-medium border transition-all capitalize"
               style={activeTab === t
                 ? { background: '#E8650D', color: 'white', borderColor: '#E8650D' }
@@ -269,7 +294,7 @@ export default function ClientDetail() {
             <div className="rounded-xl p-4 border" style={{ background: '#FDF1E7', borderColor: '#F0C9A8' }}>
               <div className="text-xs font-semibold uppercase tracking-wider mb-1.5" style={{ color: '#B34E00' }}>Account summary</div>
               <p className="text-sm leading-relaxed" style={{ color: '#7A4510' }}>
-                {client.name} is a {client.status === 'growing' ? 'growing' : client.status === 'at_risk' ? 'high-priority at-risk' : client.status.replace('_',' ')} {client.segment === 'existing' ? 'account' : client.segment === 'wishlist' ? 'prospect' : 'win-back target'} worth {formatRs(client.monthly_value)} per month ({revenueShare}% of portfolio revenue).
+                {client.name} is a {client.status === 'growing' ? 'growing' : client.status === 'at_risk' ? 'high-priority at-risk' : client.status.replace('_', ' ')} {client.segment === 'existing' ? 'account' : client.segment === 'wishlist' ? 'prospect' : 'win-back target'} worth {formatRs(client.monthly_value)} per month ({revenueShare}% of portfolio revenue).
                 {lastContactDays !== null ? ` Last contact was ${lastContactDays === 0 ? 'today' : `${lastContactDays} days ago`}${lastContactDays > 30 ? ' — overdue for outreach' : ''}.` : ' No contact has ever been logged — immediate outreach required.'}
                 {totalOutstanding > 0 ? ` Outstanding balance of ${formatRs(totalOutstanding)} needs collection.` : invoices.length > 0 ? ' All invoices are settled.' : ''}
                 {contractDaysLeft !== null && contractDaysLeft < 90 ? ` Contract expires in ${contractDaysLeft} days — begin renewal conversation now.` : ''}
@@ -291,14 +316,14 @@ export default function ClientDetail() {
                 <div className="text-sm font-semibold text-gray-800 mb-3">Client details</div>
                 <div className="grid grid-cols-2 gap-y-3 text-sm">
                   {[
-                    { label: 'Industry',         value: client.industry || 'Not set' },
-                    { label: 'City',             value: client.city || 'Not set' },
-                    { label: 'Segment',          value: client.segment.charAt(0).toUpperCase() + client.segment.slice(1) },
-                    { label: 'Assigned to',      value: (client.profiles as any)?.full_name || 'Unassigned' },
-                    { label: 'Contract start',   value: client.contract_start ? new Date(client.contract_start).toLocaleDateString('en-IN', { day: 'numeric', month: 'short', year: 'numeric' }) : 'N/A' },
-                    { label: 'Contract end',     value: client.contract_end ? new Date(client.contract_end).toLocaleDateString('en-IN', { day: 'numeric', month: 'short', year: 'numeric' }) : 'N/A' },
-                    { label: 'Last contact',     value: client.last_contact ? new Date(client.last_contact).toLocaleDateString('en-IN', { day: 'numeric', month: 'short', year: 'numeric' }) : 'Never' },
-                    { label: 'Revenue share',    value: `${revenueShare}% of total portfolio` },
+                    { label: 'Industry',       value: client.industry || 'Not set' },
+                    { label: 'City',           value: client.city || 'Not set' },
+                    { label: 'Segment',        value: client.segment.charAt(0).toUpperCase() + client.segment.slice(1) },
+                    { label: 'Assigned to',    value: emp.name || 'Unassigned' },
+                    { label: 'Contract start', value: client.contract_start ? new Date(client.contract_start).toLocaleDateString('en-IN', { day: 'numeric', month: 'short', year: 'numeric' }) : 'N/A' },
+                    { label: 'Contract end',   value: client.contract_end ? new Date(client.contract_end).toLocaleDateString('en-IN', { day: 'numeric', month: 'short', year: 'numeric' }) : 'N/A' },
+                    { label: 'Last contact',   value: client.last_contact ? new Date(client.last_contact).toLocaleDateString('en-IN', { day: 'numeric', month: 'short', year: 'numeric' }) : 'Never' },
+                    { label: 'Revenue share',  value: `${revenueShare}% of total portfolio` },
                   ].map(r => (
                     <div key={r.label}>
                       <div className="text-xs text-gray-400 mb-0.5">{r.label}</div>
@@ -323,13 +348,13 @@ export default function ClientDetail() {
               <div className="bg-white border border-gray-100 rounded-xl p-4">
                 <div className="text-sm font-semibold text-gray-800 mb-3">Financial snapshot</div>
                 {[
-                  { label: 'Total billed',      value: formatRs(totalBilled),        color: '' },
-                  { label: 'Total collected',   value: formatRs(totalPaid),          color: 'text-green-700' },
-                  { label: 'Outstanding',       value: formatRs(totalOutstanding),   color: totalOutstanding > 0 ? 'text-red-600' : 'text-green-700' },
-                  { label: 'Campaign budget',   value: formatRs(totalBudget),        color: '' },
-                  { label: 'Actual spend',      value: formatRs(totalSpend),         color: '' },
-                  { label: 'Budget utilised',   value: `${budgetUtilisation}%`,      color: budgetUtilisation > 90 ? 'text-amber-600' : '' },
-                  { label: 'Signed contracts',  value: formatRs(totalSigned),        color: 'text-green-700' },
+                  { label: 'Total billed',     value: formatRs(totalBilled),      color: '' },
+                  { label: 'Total collected',  value: formatRs(totalPaid),        color: 'text-green-700' },
+                  { label: 'Outstanding',      value: formatRs(totalOutstanding), color: totalOutstanding > 0 ? 'text-red-600' : 'text-green-700' },
+                  { label: 'Campaign budget',  value: formatRs(totalBudget),      color: '' },
+                  { label: 'Actual spend',     value: formatRs(totalSpend),       color: '' },
+                  { label: 'Budget utilised',  value: totalBudget > 0 ? `${budgetUtilisation}%` : '—', color: budgetUtilisation > 90 ? 'text-amber-600' : '' },
+                  { label: 'Signed contracts', value: formatRs(totalSigned),      color: 'text-green-700' },
                 ].map(r => (
                   <div key={r.label} className="flex justify-between items-center py-2 border-b border-gray-50 last:border-0">
                     <span className="text-xs text-gray-500">{r.label}</span>
@@ -381,10 +406,10 @@ export default function ClientDetail() {
               <Metric label="Total billed" value={formatRs(totalBilled)} />
               <Metric label="Collected" value={formatRs(totalPaid)} color="text-green-700" />
               <Metric label="Outstanding" value={formatRs(totalOutstanding)} color={totalOutstanding > 0 ? 'text-red-600' : 'text-green-700'} />
-              <Metric label="Collection rate" value={totalBilled > 0 ? `${Math.round((totalPaid / totalBilled) * 100)}%` : '0%'} />
+              <Metric label="Collection rate" value={totalBilled > 0 ? `${Math.round((totalPaid / totalBilled) * 100)}%` : 'N/A'} />
             </div>
             {invoices.length === 0 ? (
-              <div className="bg-white border border-gray-100 rounded-xl p-8 text-center text-gray-400">No invoices yet</div>
+              <div className="bg-white border border-gray-100 rounded-xl p-8 text-center text-gray-400">No invoices yet — add the first one with the + Invoice button</div>
             ) : (
               <div className="bg-white border border-gray-100 rounded-xl overflow-hidden">
                 <table className="w-full text-sm">
@@ -424,7 +449,7 @@ export default function ClientDetail() {
               <Metric label="Total proposals" value={String(proposals.length)} />
               <Metric label="Proposals value" value={formatRs(totalProposalValue)} />
               <Metric label="Signed value" value={formatRs(totalSigned)} color="text-green-700" />
-              <Metric label="Win rate" value={proposals.length > 0 ? `${Math.round((signedProposals.length / proposals.length) * 100)}%` : '0%'} />
+              <Metric label="Win rate" value={proposals.length > 0 ? `${Math.round((signedProposals.length / proposals.length) * 100)}%` : 'N/A'} />
             </div>
             {proposals.length === 0 ? (
               <div className="bg-white border border-gray-100 rounded-xl p-8 text-center text-gray-400">No proposals yet</div>
@@ -443,7 +468,9 @@ export default function ClientDetail() {
                   </thead>
                   <tbody>
                     {proposals.map(p => {
-                      const utilisation = p.campaign_budget > 0 ? Math.round((p.actual_spend / p.campaign_budget) * 100) : 0
+                      const budget = p.campaign_budget ?? 0
+                      const spend = p.actual_spend ?? 0
+                      const utilisation = budget > 0 ? Math.round((spend / budget) * 100) : 0
                       return (
                         <tr key={p.id} className="border-b border-gray-50 hover:bg-gray-50">
                           <td className="px-4 py-3 font-medium">{p.title}</td>
@@ -461,7 +488,7 @@ export default function ClientDetail() {
                             <span className="px-2.5 py-0.5 rounded-full text-xs font-medium capitalize"
                               style={{
                                 background: p.status === 'signed' ? '#EAF3DE' : p.status === 'lost' ? '#FCEBEB' : '#FAEEDA',
-                                color: p.status === 'signed' ? '#27500A' : p.status === 'lost' ? '#A32D2D' : '#854F0B'
+                                color: p.status === 'signed' ? '#27500A' : p.status === 'lost' ? '#A32D2D' : '#854F0B',
                               }}>
                               {p.status}
                             </span>
@@ -500,7 +527,7 @@ export default function ClientDetail() {
                 <Metric label="Outstanding balance" value={formatRs(totalOutstanding)} color={totalOutstanding > 0 ? 'text-red-600' : 'text-green-700'} />
                 <Metric label="Collection rate" value={totalBilled > 0 ? `${Math.round((totalPaid / totalBilled) * 100)}%` : 'N/A'} />
                 <Metric label="Overdue invoices" value={String(invoices.filter(i => i.status === 'overdue').length)} color={invoices.filter(i => i.status === 'overdue').length > 0 ? 'text-red-600' : 'text-green-700'} />
-                <Metric label="Campaign budget utilised" value={`${budgetUtilisation}%`} color={budgetUtilisation > 90 ? 'text-amber-600' : budgetUtilisation < 30 ? 'text-red-500' : ''} />
+                <Metric label="Campaign budget utilised" value={totalBudget > 0 ? `${budgetUtilisation}%` : 'N/A'} color={budgetUtilisation > 90 ? 'text-amber-600' : budgetUtilisation < 30 && totalBudget > 0 ? 'text-red-500' : ''} />
               </div>
             </div>
 
@@ -530,32 +557,32 @@ export default function ClientDetail() {
 
       {/* Add Invoice Modal */}
       {showInv && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center" style={{ background: 'rgba(0,0,0,0.4)' }} onClick={() => setShowInv(false)}>
-          <div className="bg-white rounded-2xl p-6 w-full max-w-sm mx-4 shadow-xl" onClick={e => e.stopPropagation()}>
-            <h2 className="text-lg font-semibold mb-4">Add invoice — {client.name}</h2>
-            <div className="space-y-3">
-              <input value={invForm.amount} onChange={e => setInvForm({ ...invForm, amount: e.target.value })}
-                placeholder="Amount (Rs)" type="number" className="w-full px-3 py-2 text-sm border border-gray-200 rounded-lg focus:outline-none focus:border-orange-400" />
-              <input value={invForm.due_date} onChange={e => setInvForm({ ...invForm, due_date: e.target.value })}
-                type="date" className="w-full px-3 py-2 text-sm border border-gray-200 rounded-lg focus:outline-none focus:border-orange-400" />
-              <select value={invForm.status} onChange={e => setInvForm({ ...invForm, status: e.target.value })}
-                className="w-full px-3 py-2 text-sm border border-gray-200 rounded-lg bg-white focus:outline-none focus:border-orange-400">
-                <option value="pending">Pending</option>
-                <option value="paid">Paid</option>
-                <option value="overdue">Overdue</option>
-                <option value="due_today">Due today</option>
-              </select>
-            </div>
-            <div className="flex gap-3 mt-5">
-              <button onClick={() => setShowInv(false)} className="flex-1 px-4 py-2 text-sm font-medium border border-gray-200 rounded-lg text-gray-600 hover:bg-gray-50">Cancel</button>
-              <button onClick={addInvoice} disabled={savingInv || !invForm.amount || !invForm.due_date}
-                className="flex-1 px-4 py-2 text-sm font-medium text-white rounded-lg disabled:opacity-50"
-                style={{ background: '#E8650D' }}>
-                {savingInv ? 'Saving...' : 'Add invoice'}
-              </button>
-            </div>
+        <Modal onClose={() => { if (!savingInv) { setShowInv(false); setInvError(null) } }} label={`Add invoice for ${client.name}`}>
+          <h2 className="text-lg font-semibold mb-4">Add invoice — {client.name}</h2>
+          <div className="space-y-3">
+            <input value={invForm.amount} onChange={e => setInvForm({ ...invForm, amount: e.target.value })}
+              placeholder="Amount (Rs)" aria-label="Invoice amount in rupees" type="number" min={1}
+              className="w-full px-3 py-2 text-sm border border-gray-200 rounded-lg focus:outline-none focus:border-orange-400" />
+            <input value={invForm.due_date} onChange={e => setInvForm({ ...invForm, due_date: e.target.value })}
+              type="date" aria-label="Due date" className="w-full px-3 py-2 text-sm border border-gray-200 rounded-lg focus:outline-none focus:border-orange-400" />
+            <select value={invForm.status} onChange={e => setInvForm({ ...invForm, status: e.target.value })}
+              aria-label="Invoice status"
+              className="w-full px-3 py-2 text-sm border border-gray-200 rounded-lg bg-white focus:outline-none focus:border-orange-400">
+              <option value="pending">Pending</option>
+              <option value="paid">Paid</option>
+            </select>
+            {invError && <p role="alert" className="text-xs text-red-600 bg-red-50 rounded-lg px-3 py-2">{invError}</p>}
+            <p className="text-xs text-gray-400">Overdue and due-today are calculated automatically from the due date.</p>
           </div>
-        </div>
+          <div className="flex gap-3 mt-5">
+            <button onClick={() => { setShowInv(false); setInvError(null) }} disabled={savingInv} className="flex-1 px-4 py-2 text-sm font-medium border border-gray-200 rounded-lg text-gray-600 hover:bg-gray-50 disabled:opacity-50">Cancel</button>
+            <button onClick={addInvoice} disabled={savingInv || !invForm.amount || !invForm.due_date}
+              className="flex-1 px-4 py-2 text-sm font-medium text-white rounded-lg disabled:opacity-50"
+              style={{ background: '#E8650D' }}>
+              {savingInv ? 'Saving...' : 'Add invoice'}
+            </button>
+          </div>
+        </Modal>
       )}
     </div>
   )
