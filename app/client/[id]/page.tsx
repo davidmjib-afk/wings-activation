@@ -1,12 +1,15 @@
 'use client'
-import { useCallback, useEffect, useState } from 'react'
+import { useCallback, useEffect, useRef, useState } from 'react'
 import { useParams, useRouter } from 'next/navigation'
-import { Client, Invoice, Proposal } from '@/lib/supabase'
+import { Client, Invoice, InvoiceFile, Proposal } from '@/lib/supabase'
 import {
   getClientDetail, createInvoice, logContactToday,
   effectiveInvoiceStatus, daysSince, empInfo,
+  uploadInvoiceFile, getInvoiceFileUrl, importInvoicesCsv,
+  formatBytes, INVOICE_FILE_ACCEPT, CsvImportResult,
 } from '@/lib/data'
-import { ArrowLeft, AlertTriangle, User, Building, MapPin } from 'lucide-react'
+import { useAuth } from '@/components/AuthGuard'
+import { ArrowLeft, AlertTriangle, User, Building, MapPin, FileText, Upload, LogOut } from 'lucide-react'
 
 // Client-page formatter keeps its K notation (matches existing design).
 const formatRs = (n: number | null | undefined) => {
@@ -72,10 +75,12 @@ function SkeletonProfile() {
 export default function ClientDetail() {
   const params = useParams()
   const router = useRouter()
+  const { profile, canWrite, signOut } = useAuth()
   const clientId = String(params.id)
   const [client, setClient] = useState<Client | null>(null)
   const [invoices, setInvoices] = useState<Invoice[]>([])
   const [proposals, setProposals] = useState<Proposal[]>([])
+  const [files, setFiles] = useState<InvoiceFile[]>([])
   const [portfolioTotal, setPortfolioTotal] = useState(0)
   const [loading, setLoading] = useState(true)
   const [loadError, setLoadError] = useState<string | null>(null)
@@ -86,6 +91,18 @@ export default function ClientDetail() {
   const [invForm, setInvForm] = useState({ amount: '', due_date: '', status: 'pending' })
   const [invError, setInvError] = useState<string | null>(null)
   const [savingInv, setSavingInv] = useState(false)
+  // Invoice file uploads
+  const [showUpload, setShowUpload] = useState(false)
+  const [uploadError, setUploadError] = useState<string | null>(null)
+  const [uploading, setUploading] = useState(false)
+  const uploadInputRef = useRef<HTMLInputElement | null>(null)
+  const [openingFileId, setOpeningFileId] = useState<string | null>(null)
+  // CSV bulk import
+  const [showCsv, setShowCsv] = useState(false)
+  const [csvBusy, setCsvBusy] = useState(false)
+  const [csvError, setCsvError] = useState<string | null>(null)
+  const [csvResult, setCsvResult] = useState<CsvImportResult | null>(null)
+  const csvInputRef = useRef<HTMLInputElement | null>(null)
 
   const reload = useCallback(async () => {
     setLoadError(null)
@@ -94,6 +111,7 @@ export default function ClientDetail() {
     setClient(res.data.client)
     setInvoices(res.data.invoices.map(i => ({ ...i, status: effectiveInvoiceStatus(i) })))
     setProposals(res.data.proposals)
+    setFiles(res.data.files)
     setPortfolioTotal(res.data.portfolioMonthlyTotal)
     setLoading(false)
   }, [clientId])
@@ -107,6 +125,43 @@ export default function ClientDetail() {
     if (res.error !== null) setActionError(res.error)
     else await reload()
     setLogging(false)
+  }
+
+  async function handleUpload() {
+    const file = uploadInputRef.current?.files?.[0]
+    if (!file) { setUploadError('Choose a file first.'); return }
+    setUploadError(null)
+    setUploading(true)
+    const res = await uploadInvoiceFile(clientId, file, profile?.id ?? null)
+    setUploading(false)
+    if (res.error !== null) { setUploadError(res.error); return }
+    setShowUpload(false)
+    if (uploadInputRef.current) uploadInputRef.current.value = ''
+    await reload()
+  }
+
+  async function openFile(f: InvoiceFile) {
+    setActionError(null)
+    setOpeningFileId(f.id)
+    const res = await getInvoiceFileUrl(f.file_path)
+    setOpeningFileId(null)
+    if (res.error !== null) { setActionError(res.error); return }
+    window.open(res.data, '_blank', 'noopener')
+  }
+
+  async function handleCsvImport() {
+    const file = csvInputRef.current?.files?.[0]
+    if (!file) { setCsvError('Choose a CSV file first.'); return }
+    setCsvError(null)
+    setCsvResult(null)
+    setCsvBusy(true)
+    const text = await file.text()
+    const res = await importInvoicesCsv(clientId, text)
+    setCsvBusy(false)
+    if (res.error !== null) { setCsvError(res.error); return }
+    setCsvResult(res.data)
+    if (csvInputRef.current) csvInputRef.current.value = ''
+    await reload()
   }
 
   async function addInvoice() {
@@ -173,9 +228,17 @@ export default function ClientDetail() {
       <div className="flex items-center justify-between px-6 flex-shrink-0" style={{ background: '#1A1A1A', height: 52 }}>
         <span className="text-sm font-semibold tracking-widest" style={{ color: '#E8650D' }}>WINGS GROUP</span>
         <span className="text-xs text-gray-400">Activation — Client Profile</span>
-        <div className="flex items-center gap-2 bg-gray-800 rounded-full px-3 py-1">
-          <div className="w-6 h-6 rounded-full flex items-center justify-center text-white text-xs font-semibold" style={{ background: '#E8650D' }}>AS</div>
-          <span className="text-xs text-gray-300">Arun Samuel</span>
+        <div className="flex items-center gap-3">
+          <div className="flex items-center gap-2 bg-gray-800 rounded-full px-3 py-1">
+            <div className="w-6 h-6 rounded-full flex items-center justify-center text-white text-xs font-semibold" style={{ background: '#E8650D' }}>
+              {(profile?.full_name ?? 'U').split(' ').map(w => w.charAt(0)).join('').slice(0, 2).toUpperCase()}
+            </div>
+            <span className="text-xs text-gray-300">{profile?.full_name ?? 'Signed in'}</span>
+          </div>
+          <button onClick={signOut} aria-label="Sign out"
+            className="flex items-center gap-1.5 text-xs text-gray-400 hover:text-white transition-colors">
+            <LogOut size={13} /> Sign out
+          </button>
         </div>
       </div>
 
@@ -212,16 +275,20 @@ export default function ClientDetail() {
               </div>
             </div>
             <div className="flex items-center gap-3">
-              <button onClick={logContact} disabled={logging}
-                className="px-4 py-1.5 rounded-lg text-sm font-medium border transition-colors disabled:opacity-50"
-                style={{ borderColor: '#E8650D', color: '#E8650D' }}>
-                {logging ? 'Logging...' : 'Log contact today'}
-              </button>
-              <button onClick={() => setShowInv(true)}
-                className="px-4 py-1.5 rounded-lg text-sm font-medium text-white"
-                style={{ background: '#E8650D' }}>
-                + Invoice
-              </button>
+              {canWrite && (
+                <>
+                  <button onClick={logContact} disabled={logging}
+                    className="px-4 py-1.5 rounded-lg text-sm font-medium border transition-colors disabled:opacity-50"
+                    style={{ borderColor: '#E8650D', color: '#E8650D' }}>
+                    {logging ? 'Logging...' : 'Log contact today'}
+                  </button>
+                  <button onClick={() => setShowInv(true)}
+                    className="px-4 py-1.5 rounded-lg text-sm font-medium text-white"
+                    style={{ background: '#E8650D' }}>
+                    + Invoice
+                  </button>
+                </>
+              )}
               <span className="px-3 py-1.5 rounded-full text-sm font-medium" style={{ background: st.bg, color: st.color }}>
                 {st.label}
               </span>
@@ -408,6 +475,76 @@ export default function ClientDetail() {
               <Metric label="Outstanding" value={formatRs(totalOutstanding)} color={totalOutstanding > 0 ? 'text-red-600' : 'text-green-700'} />
               <Metric label="Collection rate" value={totalBilled > 0 ? `${Math.round((totalPaid / totalBilled) * 100)}%` : 'N/A'} />
             </div>
+
+            {/* Uploaded invoice files */}
+            <div className="bg-white border border-gray-100 rounded-xl overflow-hidden">
+              <div className="flex items-center justify-between px-4 py-3 border-b border-gray-100">
+                <div className="flex items-center gap-2">
+                  <FileText size={15} style={{ color: '#E8650D' }} />
+                  <span className="text-sm font-semibold">Invoice files ({files.length})</span>
+                  {files.length > 0 && (
+                    <span className="text-xs text-gray-400">
+                      · {formatBytes(files.reduce((s, f) => s + f.file_size_bytes, 0))} total
+                      · last upload {new Date(files[0].created_at).toLocaleDateString('en-IN', { day: 'numeric', month: 'short', year: 'numeric' })}
+                    </span>
+                  )}
+                </div>
+                {canWrite && (
+                  <div className="flex items-center gap-2">
+                    <button onClick={() => { setShowCsv(true); setCsvError(null); setCsvResult(null) }}
+                      className="px-3 py-1.5 rounded-lg text-xs font-medium border transition-colors"
+                      style={{ borderColor: '#E8650D', color: '#E8650D' }}>
+                      Import CSV
+                    </button>
+                    <button onClick={() => { setShowUpload(true); setUploadError(null) }}
+                      className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium text-white"
+                      style={{ background: '#E8650D' }}>
+                      <Upload size={12} /> Upload file
+                    </button>
+                  </div>
+                )}
+              </div>
+              {files.length === 0 ? (
+                <div className="p-6 text-center text-sm text-gray-400">
+                  No files uploaded yet{canWrite ? ' — upload a PDF, JPG or PNG of an invoice' : ''}.
+                </div>
+              ) : (
+                <table className="w-full text-sm">
+                  <thead className="bg-gray-50 border-b border-gray-100">
+                    <tr>
+                      <th className="text-left px-4 py-2.5 text-xs font-medium text-gray-400 uppercase tracking-wider">File</th>
+                      <th className="text-left px-4 py-2.5 text-xs font-medium text-gray-400 uppercase tracking-wider">Date uploaded</th>
+                      <th className="text-left px-4 py-2.5 text-xs font-medium text-gray-400 uppercase tracking-wider">Size</th>
+                      <th className="text-left px-4 py-2.5 text-xs font-medium text-gray-400 uppercase tracking-wider">Uploaded by</th>
+                      <th className="text-right px-4 py-2.5 text-xs font-medium text-gray-400 uppercase tracking-wider">Action</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {files.map(f => (
+                      <tr key={f.id} className="border-b border-gray-50 hover:bg-gray-50">
+                        <td className="px-4 py-3 font-medium text-gray-800">
+                          <span className="flex items-center gap-2">
+                            <FileText size={14} className="text-gray-300 flex-shrink-0" />
+                            <span className="truncate" style={{ maxWidth: 280 }}>{f.file_name}</span>
+                          </span>
+                        </td>
+                        <td className="px-4 py-3 text-gray-500">
+                          {new Date(f.created_at).toLocaleDateString('en-IN', { day: 'numeric', month: 'short', year: 'numeric' })}
+                        </td>
+                        <td className="px-4 py-3 text-gray-500">{formatBytes(f.file_size_bytes)}</td>
+                        <td className="px-4 py-3 text-gray-500">{f.profiles?.full_name ?? '—'}</td>
+                        <td className="px-4 py-3 text-right">
+                          <button onClick={() => openFile(f)} disabled={openingFileId === f.id}
+                            className="text-xs font-medium disabled:opacity-50" style={{ color: '#E8650D' }}>
+                            {openingFileId === f.id ? 'Opening…' : 'View'}
+                          </button>
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              )}
+            </div>
             {invoices.length === 0 ? (
               <div className="bg-white border border-gray-100 rounded-xl p-8 text-center text-gray-400">No invoices yet — add the first one with the + Invoice button</div>
             ) : (
@@ -554,6 +691,64 @@ export default function ClientDetail() {
           </div>
         )}
       </div>
+
+      {/* Upload Invoice File Modal */}
+      {showUpload && (
+        <Modal onClose={() => { if (!uploading) { setShowUpload(false); setUploadError(null) } }} label={`Upload invoice file for ${client.name}`}>
+          <h2 className="text-lg font-semibold mb-1">Upload invoice file</h2>
+          <p className="text-xs text-gray-400 mb-4">{client.name} · PDF, JPG or PNG · max 10 MB</p>
+          <input ref={uploadInputRef} type="file" accept={INVOICE_FILE_ACCEPT} aria-label="Invoice file"
+            className="w-full text-sm text-gray-600 file:mr-3 file:px-3 file:py-1.5 file:rounded-lg file:border-0 file:text-xs file:font-medium file:text-white file:cursor-pointer file:bg-[#E8650D]" />
+          {uploadError && <p role="alert" className="text-xs text-red-600 bg-red-50 rounded-lg px-3 py-2 mt-3">{uploadError}</p>}
+          <div className="flex gap-3 mt-5">
+            <button onClick={() => { setShowUpload(false); setUploadError(null) }} disabled={uploading}
+              className="flex-1 px-4 py-2 text-sm font-medium border border-gray-200 rounded-lg text-gray-600 hover:bg-gray-50 disabled:opacity-50">Cancel</button>
+            <button onClick={handleUpload} disabled={uploading}
+              className="flex-1 px-4 py-2 text-sm font-medium text-white rounded-lg disabled:opacity-50"
+              style={{ background: '#E8650D' }}>
+              {uploading ? 'Uploading…' : 'Upload'}
+            </button>
+          </div>
+        </Modal>
+      )}
+
+      {/* CSV Import Modal */}
+      {showCsv && (
+        <Modal onClose={() => { if (!csvBusy) { setShowCsv(false); setCsvError(null); setCsvResult(null) } }} label={`Import invoices from CSV for ${client.name}`}>
+          <h2 className="text-lg font-semibold mb-1">Import invoices from CSV</h2>
+          <p className="text-xs text-gray-400 mb-4">
+            Header row required with columns <code className="text-gray-600">amount, due_date</code> (and optional <code className="text-gray-600">status</code>). Max 500 rows.
+          </p>
+          <input ref={csvInputRef} type="file" accept=".csv,text/csv" aria-label="CSV file"
+            className="w-full text-sm text-gray-600" />
+          {csvError && <p role="alert" className="text-xs text-red-600 bg-red-50 rounded-lg px-3 py-2 mt-3">{csvError}</p>}
+          {csvResult && (
+            <div role="status" className="text-xs rounded-lg px-3 py-2 mt-3 bg-green-50 text-green-700">
+              Imported {csvResult.inserted} invoice{csvResult.inserted === 1 ? '' : 's'}.
+              {csvResult.errors.length > 0 && (
+                <div className="mt-2 text-red-600 max-h-28 overflow-y-auto">
+                  {csvResult.errors.length} row{csvResult.errors.length === 1 ? '' : 's'} skipped:
+                  <ul className="list-disc ml-4 mt-1">
+                    {csvResult.errors.slice(0, 10).map((e, i) => <li key={i}>{e}</li>)}
+                    {csvResult.errors.length > 10 && <li>…and {csvResult.errors.length - 10} more</li>}
+                  </ul>
+                </div>
+              )}
+            </div>
+          )}
+          <div className="flex gap-3 mt-5">
+            <button onClick={() => { setShowCsv(false); setCsvError(null); setCsvResult(null) }} disabled={csvBusy}
+              className="flex-1 px-4 py-2 text-sm font-medium border border-gray-200 rounded-lg text-gray-600 hover:bg-gray-50 disabled:opacity-50">
+              {csvResult ? 'Done' : 'Cancel'}
+            </button>
+            <button onClick={handleCsvImport} disabled={csvBusy}
+              className="flex-1 px-4 py-2 text-sm font-medium text-white rounded-lg disabled:opacity-50"
+              style={{ background: '#E8650D' }}>
+              {csvBusy ? 'Importing…' : 'Import'}
+            </button>
+          </div>
+        </Modal>
+      )}
 
       {/* Add Invoice Modal */}
       {showInv && (
