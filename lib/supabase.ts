@@ -19,6 +19,7 @@ export type Profile = {
   role: 'admin' | 'manager' | 'executive'
   team: string | null
   emp_code: string | null
+  auth_user_id: string | null
 }
 
 export type Client = {
@@ -58,4 +59,16 @@ export type Proposal = {
   status: string
   sent_date: string | null
   signed_date: string | null
+}
+
+export type InvoiceFile = {
+  id: string
+  client_id: string
+  file_path: string
+  file_name: string
+  file_size_bytes: number
+  mime_type: string
+  uploaded_by: string | null // profiles.id of uploader
+  created_at: string
+  profiles?: Partial<Profile> | null
 }
