@@ -82,6 +82,29 @@ export async function getCurrentProfile(session: Session): Promise<AuthResult<Pr
   return ok((byEmail.data as Profile) ?? null)
 }
 
+// ---------- self-service: change own password ----------
+// Lets the signed-in user set a new password (closes the V5 TODO). Uses the
+// user's own session token — no admin/service-role key involved.
+
+export function validateNewPassword(next: string, confirm: string): string | null {
+  if (next.length < 8) return 'New password must be at least 8 characters.'
+  if (next.length > 72) return 'New password must be 72 characters or fewer.'
+  if (next !== confirm) return 'The two passwords do not match.'
+  return null
+}
+
+export async function changePassword(newPassword: string): Promise<AuthResult<true>> {
+  if (newPassword.length < 8) return fail('New password must be at least 8 characters.')
+  const { error } = await supabase.auth.updateUser({ password: newPassword })
+  if (error) {
+    if (error.message.toLowerCase().includes('should be different')) {
+      return fail('New password must be different from your current one.')
+    }
+    return fail(`Could not update password: ${error.message}`)
+  }
+  return ok(true)
+}
+
 // ---------- admin: create login IDs ----------
 // Goes through our server route (service-role key never reaches the browser).
 
