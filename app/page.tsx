@@ -7,8 +7,9 @@ import {
 } from '@/lib/data'
 import {
   LayoutDashboard, Users, Star, RefreshCw, FileText,
-  TrendingUp, Settings, AlertTriangle, ChevronRight,
+  TrendingUp, Settings, AlertTriangle, ChevronRight, LogOut, Shield,
 } from 'lucide-react'
+import { useAuth } from '@/components/AuthGuard'
 
 type Tab = 'existing' | 'wishlist' | 'winback'
 type Page = 'dashboard' | 'billing' | 'pipeline' | 'hygiene' | 'settings'
@@ -98,6 +99,7 @@ function SkeletonDashboard() {
 }
 
 export default function Dashboard() {
+  const { profile, isAdmin, signOut } = useAuth()
   const [clients, setClients] = useState<Client[]>([])
   const [invoices, setInvoices] = useState<Invoice[]>([])
   const [loading, setLoading] = useState(true)
@@ -212,9 +214,23 @@ export default function Dashboard() {
       <div className="flex items-center justify-between px-6 h-13 flex-shrink-0" style={{ background: '#1A1A1A', height: 52 }}>
         <span className="text-sm font-semibold tracking-widest" style={{ color: '#E8650D' }}>WINGS GROUP</span>
         <span className="text-xs text-gray-400">Activation — Client Intelligence Platform</span>
-        <div className="flex items-center gap-2 bg-gray-800 rounded-full px-3 py-1">
-          <div className="w-6 h-6 rounded-full flex items-center justify-center text-white text-xs font-semibold" style={{ background: '#E8650D' }}>AS</div>
-          <span className="text-xs text-gray-300">Arun Samuel</span>
+        <div className="flex items-center gap-3">
+          {isAdmin && (
+            <a href="/admin/users" aria-label="Manage users"
+              className="flex items-center gap-1.5 text-xs text-gray-400 hover:text-white transition-colors">
+              <Shield size={13} /> Manage users
+            </a>
+          )}
+          <div className="flex items-center gap-2 bg-gray-800 rounded-full px-3 py-1">
+            <div className="w-6 h-6 rounded-full flex items-center justify-center text-white text-xs font-semibold" style={{ background: '#E8650D' }}>
+              {(profile?.full_name ?? 'U').split(' ').map(w => w.charAt(0)).join('').slice(0, 2).toUpperCase()}
+            </div>
+            <span className="text-xs text-gray-300">{profile?.full_name ?? 'Signed in'}</span>
+          </div>
+          <button onClick={signOut} aria-label="Sign out and switch user"
+            className="flex items-center gap-1.5 text-xs text-gray-400 hover:text-white transition-colors">
+            <LogOut size={13} /> Sign out
+          </button>
         </div>
       </div>
 
