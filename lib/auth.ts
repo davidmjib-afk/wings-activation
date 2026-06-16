@@ -83,8 +83,6 @@ export async function getCurrentProfile(session: Session): Promise<AuthResult<Pr
 }
 
 // ---------- self-service: change own password ----------
-// Lets the signed-in user set a new password (closes the V5 TODO). Uses the
-// user's own session token — no admin/service-role key involved.
 
 export function validateNewPassword(next: string, confirm: string): string | null {
   if (next.length < 8) return 'New password must be at least 8 characters.'
@@ -105,32 +103,53 @@ export async function changePassword(newPassword: string): Promise<AuthResult<tr
   return ok(true)
 }
 
-// ---------- admin: create login IDs ----------
-// Goes through our server route (service-role key never reaches the browser).
+// ---------- admin: manage login IDs (all via the service-role server route) ----------
 
-export async function adminCreateUser(input: NewUserInput): Promise<AuthResult<true>> {
-  const validationError = validateNewUserInput(input)
-  if (validationError) return fail(validationError)
+async function adminFetch(method: 'POST' | 'PATCH' | 'DELETE', body: unknown): Promise<AuthResult<true>> {
   const session = await getSession()
   if (!session) return fail('Your session has expired — please sign in again.')
   const res = await fetch('/api/admin/users', {
-    method: 'POST',
+    method,
     headers: {
       'Content-Type': 'application/json',
       Authorization: `Bearer ${session.access_token}`,
     },
-    body: JSON.stringify({
-      email: input.email.trim(),
-      password: input.password,
-      full_name: input.full_name.trim(),
-      role: input.role,
-    }),
+    body: JSON.stringify(body),
   })
   if (!res.ok) {
-    const body = (await res.json().catch(() => null)) as { error?: string } | null
-    return fail(body?.error ?? `Could not create user (HTTP ${res.status}).`)
+    const data = (await res.json().catch(() => null)) as { error?: string } | null
+    return fail(data?.error ?? `Request failed (HTTP ${res.status}).`)
   }
   return ok(true)
+}
+
+export async function adminCreateUser(input: NewUserInput): Promise<AuthResult<true>> {
+  const validationError = validateNewUserInput(input)
+  if (validationError) return fail(validationError)
+  return adminFetch('POST', {
+    email: input.email.trim(),
+    password: input.password,
+    full_name: input.full_name.trim(),
+    role: input.role,
+  })
+}
+
+/** Revoke login but keep the profile + history. Reversible. */
+export async function adminDeactivateUser(profileId: string): Promise<AuthResult<true>> {
+  if (!profileId) return fail('Missing user.')
+  return adminFetch('PATCH', { profile_id: profileId, action: 'deactivate' })
+}
+
+/** Restore a deactivated user's login. */
+export async function adminReactivateUser(profileId: string): Promise<AuthResult<true>> {
+  if (!profileId) return fail('Missing user.')
+  return adminFetch('PATCH', { profile_id: profileId, action: 'reactivate' })
+}
+
+/** Permanently remove the login AND the profile row. Not reversible. */
+export async function adminDeleteUser(profileId: string): Promise<AuthResult<true>> {
+  if (!profileId) return fail('Missing user.')
+  return adminFetch('DELETE', { profile_id: profileId })
 }
 
 export async function listProfiles(): Promise<AuthResult<Profile[]>> {
