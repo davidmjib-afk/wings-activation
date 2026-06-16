@@ -8,7 +8,7 @@ import {
 import { changePassword, validateNewPassword } from '@/lib/auth'
 import {
   LayoutDashboard, Users, Star, RefreshCw, FileText,
-  TrendingUp, Settings, AlertTriangle, ChevronRight, LogOut, Shield, X,
+  TrendingUp, Settings, AlertTriangle, ChevronRight, LogOut, Shield, X, Clock,
 } from 'lucide-react'
 import { useAuth } from '@/components/AuthGuard'
 
@@ -204,6 +204,16 @@ export default function Dashboard() {
     try { window.localStorage.setItem(settingsKey, JSON.stringify(settings)) } catch { /* ignore quota/private-mode */ }
   }, [settings, settingsKey, settingsLoaded])
 
+  // Dark mode is app-wide: mirror it to a shared key + event so the ThemeManager
+  // (mounted in the layout) applies it on every page, not just this one.
+  useEffect(() => {
+    if (!settingsLoaded) return
+    try {
+      window.localStorage.setItem('wings.theme', settings['Dark mode'] ? 'dark' : 'light')
+      window.dispatchEvent(new CustomEvent('wings:theme'))
+    } catch { /* ignore */ }
+  }, [settings, settingsLoaded])
+
   const setSetting = (label: string, val: boolean) => setSettings(s => ({ ...s, [label]: val }))
   const on = useCallback((label: string) => settings[label] ?? false, [settings])
 
@@ -397,6 +407,9 @@ export default function Dashboard() {
             <AlertTriangle size={16} /> Data hygiene
             {staleClients.length > 0 && <span className="ml-auto text-xs bg-amber-100 text-amber-700 rounded-full px-2 py-0.5 font-semibold">{staleClients.length}</span>}
           </button>
+          <a href="/activity" className="nav-item w-full text-left">
+            <Clock size={16} /> Activity feed
+          </a>
           <button className={`nav-item w-full text-left ${activeNav === 'settings' ? 'active' : ''}`} onClick={() => navGo('settings', 'settings')}>
             <Settings size={16} /> Settings
           </button>
