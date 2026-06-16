@@ -1,15 +1,15 @@
 'use client'
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { useParams, useRouter } from 'next/navigation'
-import { Client, Invoice, InvoiceFile, Proposal } from '@/lib/supabase'
+import { Client, Invoice, InvoiceFile, Proposal, ActivityLog } from '@/lib/supabase'
 import {
   getClientDetail, createInvoice, logContactToday,
   effectiveInvoiceStatus, daysSince, empInfo,
   uploadInvoiceFile, getInvoiceFileUrl, importInvoicesCsv,
-  formatBytes, INVOICE_FILE_ACCEPT, CsvImportResult,
+  addActivity, formatBytes, INVOICE_FILE_ACCEPT, CsvImportResult,
 } from '@/lib/data'
 import { useAuth } from '@/components/AuthGuard'
-import { ArrowLeft, AlertTriangle, User, Building, MapPin, FileText, Upload, LogOut } from 'lucide-react'
+import { ArrowLeft, AlertTriangle, User, Building, MapPin, FileText, Upload, LogOut, MessageSquarePlus, Clock } from 'lucide-react'
 
 // Client-page formatter keeps its K notation (matches existing design).
 const formatRs = (n: number | null | undefined) => {
@@ -19,6 +19,27 @@ const formatRs = (n: number | null | undefined) => {
     : v >= 1000
       ? (v / 1000).toFixed(0) + 'K'
       : v.toLocaleString('en-IN'))
+}
+
+const timeAgo = (iso: string) => {
+  const d = daysSince(iso)
+  if (d === null) return ''
+  if (d === 0) return 'today'
+  if (d === 1) return 'yesterday'
+  if (d < 30) return `${d}d ago`
+  return new Date(iso).toLocaleDateString('en-IN', { day: 'numeric', month: 'short', year: 'numeric' })
+}
+
+const ACTIVITY_LABEL: Record<ActivityLog['kind'], string> = {
+  note: 'Note', contact: 'Contact', invoice: 'Invoice', status: 'Status', file: 'File', system: 'System',
+}
+const ACTIVITY_COLOR: Record<ActivityLog['kind'], { color: string; bg: string }> = {
+  note:    { color: '#185FA5', bg: '#E6F1FB' },
+  contact: { color: '#27500A', bg: '#EAF3DE' },
+  invoice: { color: '#854F0B', bg: '#FAEEDA' },
+  status:  { color: '#B34E00', bg: '#FDF1E7' },
+  file:    { color: '#5F5E5A', bg: '#F1EFE8' },
+  system:  { color: '#5F5E5A', bg: '#F1EFE8' },
 }
 
 const statusConfig: Record<string, { label: string; color: string; bg: string }> = {
@@ -52,7 +73,7 @@ function Modal({ onClose, label, children }: { onClose: () => void; label: strin
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center" style={{ background: 'rgba(0,0,0,0.4)' }} onClick={onClose}>
       <div role="dialog" aria-modal="true" aria-label={label}
-        className="bg-white rounded-2xl p-6 w-full max-w-sm mx-4 shadow-xl" onClick={e => e.stopPropagation()}>
+        className="bg-white rounded-2xl p-6 w-full max-w-sm mx-4 shadow-xl max-h-[85vh] overflow-y-auto" onClick={e => e.stopPropagation()}>
         {children}
       </div>
     </div>
@@ -81,17 +102,24 @@ export default function ClientDetail() {
   const [invoices, setInvoices] = useState<Invoice[]>([])
   const [proposals, setProposals] = useState<Proposal[]>([])
   const [files, setFiles] = useState<InvoiceFile[]>([])
+  const [activity, setActivity] = useState<ActivityLog[]>([])
   const [portfolioTotal, setPortfolioTotal] = useState(0)
   const [loading, setLoading] = useState(true)
   const [loadError, setLoadError] = useState<string | null>(null)
   const [actionError, setActionError] = useState<string | null>(null)
-  const [activeTab, setActiveTab] = useState<'overview' | 'invoices' | 'proposals' | 'metrics'>('overview')
+  const [activeTab, setActiveTab] = useState<'overview' | 'activity' | 'invoices' | 'proposals' | 'metrics'>('overview')
   const [logging, setLogging] = useState(false)
   const [showInv, setShowInv] = useState(false)
   const [invForm, setInvForm] = useState({ amount: '', due_date: '', status: 'pending' })
+  const [invDesc, setInvDesc] = useState('')
   const [invError, setInvError] = useState<string | null>(null)
   const [savingInv, setSavingInv] = useState(false)
-  // Invoice file uploads
+  const invFileRef = useRef<HTMLInputElement | null>(null)
+  // Notes
+  const [note, setNote] = useState('')
+  const [noteBusy, setNoteBusy] = useState(false)
+  const [noteError, setNoteError] = useState<string | null>(null)
+  // Invoice file uploads (client-level)
   const [showUpload, setShowUpload] = useState(false)
   const [uploadError, setUploadError] = useState<string | null>(null)
   const [uploading, setUploading] = useState(false)
@@ -112,19 +140,38 @@ export default function ClientDetail() {
     setInvoices(res.data.invoices.map(i => ({ ...i, status: effectiveInvoiceStatus(i) })))
     setProposals(res.data.proposals)
     setFiles(res.data.files)
+    setActivity(res.data.activity)
     setPortfolioTotal(res.data.portfolioMonthlyTotal)
     setLoading(false)
   }, [clientId])
 
   useEffect(() => { reload() }, [reload])
 
+  const author = { id: profile?.id ?? null, name: profile?.full_name ?? null }
+
   async function logContact() {
     setActionError(null)
     setLogging(true)
-    const res = await logContactToday(clientId, client?.status)
+    const res = await logContactToday(clientId, client?.status, author)
     if (res.error !== null) setActionError(res.error)
     else await reload()
     setLogging(false)
+  }
+
+  async function addNote() {
+    setNoteError(null)
+    setNoteBusy(true)
+    const statusLabel = client ? (statusConfig[client.status]?.label ?? client.status) : ''
+    const res = await addActivity({
+      clientId, body: note, authorId: author.id, authorName: author.name,
+      kind: 'note',
+    })
+    setNoteBusy(false)
+    if (res.error !== null) { setNoteError(res.error); return }
+    setNote('')
+    // statusLabel kept for context in placeholder; entry itself is a plain note.
+    void statusLabel
+    await reload()
   }
 
   async function handleUpload() {
@@ -132,7 +179,7 @@ export default function ClientDetail() {
     if (!file) { setUploadError('Choose a file first.'); return }
     setUploadError(null)
     setUploading(true)
-    const res = await uploadInvoiceFile(clientId, file, profile?.id ?? null)
+    const res = await uploadInvoiceFile(clientId, file, author.id)
     setUploading(false)
     if (res.error !== null) { setUploadError(res.error); return }
     setShowUpload(false)
@@ -168,11 +215,27 @@ export default function ClientDetail() {
     setInvError(null)
     setSavingInv(true)
     const res = await createInvoice({ client_id: clientId, ...invForm })
+    if (res.error !== null) { setSavingInv(false); setInvError(res.error); return }
+    const invoiceId = res.data.id
+    const file = invFileRef.current?.files?.[0]
+    let fileWarn = ''
+    if (file) {
+      const up = await uploadInvoiceFile(clientId, file, author.id, { invoiceId, description: invDesc })
+      if (up.error !== null) fileWarn = ` (invoice saved, but file upload failed: ${up.error})`
+    }
+    await addActivity({
+      clientId, invoiceId, authorId: author.id, authorName: author.name, kind: 'invoice',
+      body: `Added invoice ${formatRs(Number(invForm.amount))} due ${invForm.due_date}`
+        + (invDesc.trim() ? ` — ${invDesc.trim()}` : '')
+        + (file ? ` · file: ${file.name}` : ''),
+    })
     setSavingInv(false)
-    if (res.error !== null) { setInvError(res.error); return }
     await reload()
+    if (fileWarn) { setActionError(fileWarn); }
     setShowInv(false)
     setInvForm({ amount: '', due_date: '', status: 'pending' })
+    setInvDesc('')
+    if (invFileRef.current) invFileRef.current.value = ''
   }
 
   if (loading) return <SkeletonProfile />
@@ -213,12 +276,62 @@ export default function ClientDetail() {
   const lastContactDays = daysSince(client.last_contact)
   const st = statusConfig[client.status] || statusConfig['stable']
   const emp = empInfo(client.profiles)
+  const fileForInvoice = (invId: string) => files.find(f => f.invoice_id === invId)
 
   const Metric = ({ label, value, sub, color }: { label: string; value: string; sub?: string; color?: string }) => (
     <div className="bg-white border border-gray-100 rounded-xl p-4">
       <div className="text-xs text-gray-400 uppercase tracking-wider font-medium mb-1.5">{label}</div>
       <div className={`text-2xl font-semibold ${color || 'text-gray-900'}`}>{value}</div>
       {sub && <div className="text-xs text-gray-400 mt-1">{sub}</div>}
+    </div>
+  )
+
+  const NoteComposer = ({ placeholder }: { placeholder: string }) => (
+    <div className="bg-white border border-gray-100 rounded-xl p-4">
+      <div className="flex items-center gap-2 mb-2">
+        <MessageSquarePlus size={15} style={{ color: '#E8650D' }} />
+        <span className="text-sm font-semibold">Add a note</span>
+        <span className="text-xs text-gray-400">· logged as {author.name ?? 'you'}{client ? ` · status: ${st.label}` : ''}</span>
+      </div>
+      <textarea value={note} onChange={e => setNote(e.target.value)} rows={2} maxLength={2000}
+        placeholder={placeholder} aria-label="New note"
+        className="w-full px-3 py-2 text-sm border border-gray-200 rounded-lg focus:outline-none focus:border-orange-400" />
+      {noteError && <p role="alert" className="text-xs text-red-600 bg-red-50 rounded-lg px-3 py-2 mt-2">{noteError}</p>}
+      <div className="flex justify-end mt-2">
+        <button onClick={addNote} disabled={noteBusy || !note.trim()}
+          className="px-4 py-1.5 rounded-lg text-sm font-medium text-white disabled:opacity-50" style={{ background: '#E8650D' }}>
+          {noteBusy ? 'Saving…' : 'Add note'}
+        </button>
+      </div>
+    </div>
+  )
+
+  const Timeline = ({ items, empty }: { items: ActivityLog[]; empty: string }) => (
+    <div className="bg-white border border-gray-100 rounded-xl overflow-hidden">
+      <div className="px-4 py-3 border-b border-gray-100 text-sm font-semibold flex items-center gap-2">
+        <Clock size={14} style={{ color: '#E8650D' }} /> Activity ({items.length})
+      </div>
+      {items.length === 0 ? (
+        <div className="p-6 text-center text-sm text-gray-400">{empty}</div>
+      ) : (
+        <div className="divide-y divide-gray-50">
+          {items.map(a => {
+            const c = ACTIVITY_COLOR[a.kind] ?? ACTIVITY_COLOR.note
+            return (
+              <div key={a.id} className="px-4 py-3 flex items-start gap-3">
+                <span className="px-2 py-0.5 rounded-full text-xs font-medium flex-shrink-0 mt-0.5"
+                  style={{ background: c.bg, color: c.color }}>{ACTIVITY_LABEL[a.kind] ?? 'Note'}</span>
+                <div className="min-w-0 flex-1">
+                  <div className="text-sm text-gray-800 whitespace-pre-wrap break-words">{a.body}</div>
+                  <div className="text-xs text-gray-400 mt-0.5">
+                    {a.author_name || '—'} · {timeAgo(a.created_at)}
+                  </div>
+                </div>
+              </div>
+            )
+          })}
+        </div>
+      )}
     </div>
   )
 
@@ -343,14 +456,18 @@ export default function ClientDetail() {
         )}
 
         {/* Tabs */}
-        <div className="flex gap-2 mb-5" role="tablist" aria-label="Client profile sections">
-          {(['overview', 'invoices', 'proposals', 'metrics'] as const).map(t => (
+        <div className="flex gap-2 mb-5 flex-wrap" role="tablist" aria-label="Client profile sections">
+          {(['overview', 'activity', 'invoices', 'proposals', 'metrics'] as const).map(t => (
             <button key={t} role="tab" aria-selected={activeTab === t} onClick={() => setActiveTab(t)}
               className="px-5 py-2 rounded-full text-sm font-medium border transition-all capitalize"
               style={activeTab === t
                 ? { background: '#E8650D', color: 'white', borderColor: '#E8650D' }
                 : { background: 'white', color: '#666', borderColor: '#e5e7eb' }}>
-              {t === 'overview' ? 'Overview' : t === 'invoices' ? `Invoices (${invoices.length})` : t === 'proposals' ? `Proposals (${proposals.length})` : 'All metrics'}
+              {t === 'overview' ? 'Overview'
+                : t === 'activity' ? `Activity (${activity.length})`
+                : t === 'invoices' ? `Invoices (${invoices.length})`
+                : t === 'proposals' ? `Proposals (${proposals.length})`
+                : 'All metrics'}
             </button>
           ))}
         </div>
@@ -431,38 +548,16 @@ export default function ClientDetail() {
               </div>
             </div>
 
-            {/* Recent invoices preview */}
-            {invoices.length > 0 && (
-              <div className="bg-white border border-gray-100 rounded-xl overflow-hidden">
-                <div className="flex items-center justify-between px-4 py-3 border-b border-gray-100">
-                  <span className="text-sm font-semibold">Recent invoices</span>
-                  <button onClick={() => setActiveTab('invoices')} className="text-xs font-medium" style={{ color: '#E8650D' }}>View all</button>
-                </div>
-                <table className="w-full text-sm">
-                  <thead className="bg-gray-50">
-                    <tr>
-                      <th className="text-left px-4 py-2.5 text-xs font-medium text-gray-400 uppercase tracking-wider">Amount</th>
-                      <th className="text-left px-4 py-2.5 text-xs font-medium text-gray-400 uppercase tracking-wider">Due date</th>
-                      <th className="text-left px-4 py-2.5 text-xs font-medium text-gray-400 uppercase tracking-wider">Status</th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {invoices.slice(0, 4).map(inv => {
-                      const ic = invoiceConfig[inv.status] || invoiceConfig['pending']
-                      return (
-                        <tr key={inv.id} className="border-b border-gray-50 hover:bg-gray-50">
-                          <td className="px-4 py-3 font-semibold">{formatRs(inv.amount)}</td>
-                          <td className="px-4 py-3 text-gray-500">{new Date(inv.due_date).toLocaleDateString('en-IN', { day: 'numeric', month: 'short', year: 'numeric' })}</td>
-                          <td className="px-4 py-3">
-                            <span className="px-2.5 py-0.5 rounded-full text-xs font-medium" style={{ background: ic.bg, color: ic.color }}>{ic.label}</span>
-                          </td>
-                        </tr>
-                      )
-                    })}
-                  </tbody>
-                </table>
-              </div>
-            )}
+            {/* Recent activity preview */}
+            <Timeline items={activity.slice(0, 5)} empty="No activity logged yet. Use the Activity tab to add the first note." />
+          </div>
+        )}
+
+        {/* ACTIVITY TAB */}
+        {activeTab === 'activity' && (
+          <div className="space-y-4">
+            {canWrite && <NoteComposer placeholder={`What's happening with ${client.name}? e.g. why they're at "${st.label}", call outcomes, next steps…`} />}
+            <Timeline items={activity} empty={canWrite ? 'No activity yet — add the first note above.' : 'No activity logged yet.'} />
           </div>
         )}
 
@@ -506,15 +601,15 @@ export default function ClientDetail() {
               </div>
               {files.length === 0 ? (
                 <div className="p-6 text-center text-sm text-gray-400">
-                  No files uploaded yet{canWrite ? ' — upload a PDF, JPG or PNG of an invoice' : ''}.
+                  No files uploaded yet{canWrite ? ' — attach a PDF when adding an invoice, or use Upload file' : ''}.
                 </div>
               ) : (
                 <table className="w-full text-sm">
                   <thead className="bg-gray-50 border-b border-gray-100">
                     <tr>
                       <th className="text-left px-4 py-2.5 text-xs font-medium text-gray-400 uppercase tracking-wider">File</th>
-                      <th className="text-left px-4 py-2.5 text-xs font-medium text-gray-400 uppercase tracking-wider">Date uploaded</th>
-                      <th className="text-left px-4 py-2.5 text-xs font-medium text-gray-400 uppercase tracking-wider">Size</th>
+                      <th className="text-left px-4 py-2.5 text-xs font-medium text-gray-400 uppercase tracking-wider">Description</th>
+                      <th className="text-left px-4 py-2.5 text-xs font-medium text-gray-400 uppercase tracking-wider">Date</th>
                       <th className="text-left px-4 py-2.5 text-xs font-medium text-gray-400 uppercase tracking-wider">Uploaded by</th>
                       <th className="text-right px-4 py-2.5 text-xs font-medium text-gray-400 uppercase tracking-wider">Action</th>
                     </tr>
@@ -525,13 +620,13 @@ export default function ClientDetail() {
                         <td className="px-4 py-3 font-medium text-gray-800">
                           <span className="flex items-center gap-2">
                             <FileText size={14} className="text-gray-300 flex-shrink-0" />
-                            <span className="truncate" style={{ maxWidth: 280 }}>{f.file_name}</span>
+                            <span className="truncate" style={{ maxWidth: 220 }}>{f.file_name}</span>
                           </span>
                         </td>
+                        <td className="px-4 py-3 text-gray-500 max-w-xs truncate">{f.description || '—'}</td>
                         <td className="px-4 py-3 text-gray-500">
                           {new Date(f.created_at).toLocaleDateString('en-IN', { day: 'numeric', month: 'short', year: 'numeric' })}
                         </td>
-                        <td className="px-4 py-3 text-gray-500">{formatBytes(f.file_size_bytes)}</td>
                         <td className="px-4 py-3 text-gray-500">{f.profiles?.full_name ?? '—'}</td>
                         <td className="px-4 py-3 text-right">
                           <button onClick={() => openFile(f)} disabled={openingFileId === f.id}
@@ -556,11 +651,13 @@ export default function ClientDetail() {
                       <th className="text-left px-4 py-3 text-xs font-medium text-gray-400 uppercase tracking-wider">Due date</th>
                       <th className="text-left px-4 py-3 text-xs font-medium text-gray-400 uppercase tracking-wider">Paid date</th>
                       <th className="text-left px-4 py-3 text-xs font-medium text-gray-400 uppercase tracking-wider">Status</th>
+                      <th className="text-right px-4 py-3 text-xs font-medium text-gray-400 uppercase tracking-wider">PDF</th>
                     </tr>
                   </thead>
                   <tbody>
                     {invoices.map(inv => {
                       const ic = invoiceConfig[inv.status] || invoiceConfig['pending']
+                      const f = fileForInvoice(inv.id)
                       return (
                         <tr key={inv.id} className="border-b border-gray-50 hover:bg-gray-50">
                           <td className="px-4 py-3 font-semibold">{formatRs(inv.amount)}</td>
@@ -568,6 +665,14 @@ export default function ClientDetail() {
                           <td className="px-4 py-3 text-gray-500">{inv.paid_date ? new Date(inv.paid_date).toLocaleDateString('en-IN', { day: 'numeric', month: 'short', year: 'numeric' }) : '—'}</td>
                           <td className="px-4 py-3">
                             <span className="px-2.5 py-0.5 rounded-full text-xs font-medium" style={{ background: ic.bg, color: ic.color }}>{ic.label}</span>
+                          </td>
+                          <td className="px-4 py-3 text-right">
+                            {f ? (
+                              <button onClick={() => openFile(f)} disabled={openingFileId === f.id}
+                                className="text-xs font-medium disabled:opacity-50" style={{ color: '#E8650D' }}>
+                                {openingFileId === f.id ? 'Opening…' : 'View PDF'}
+                              </button>
+                            ) : <span className="text-xs text-gray-300">—</span>}
                           </td>
                         </tr>
                       )
@@ -679,20 +784,11 @@ export default function ClientDetail() {
                 <Metric label="Total campaign budget" value={formatRs(totalBudget)} />
               </div>
             </div>
-
-            <div className="bg-white border border-gray-100 rounded-xl p-5">
-              <div className="text-sm font-semibold text-gray-800 mb-4">Contract information</div>
-              <div className="grid grid-cols-3 gap-3">
-                <Metric label="Contract start" value={client.contract_start ? new Date(client.contract_start).toLocaleDateString('en-IN', { month: 'short', year: 'numeric' }) : 'N/A'} />
-                <Metric label="Contract end" value={client.contract_end ? new Date(client.contract_end).toLocaleDateString('en-IN', { month: 'short', year: 'numeric' }) : 'N/A'} />
-                <Metric label="Days remaining" value={contractDaysLeft !== null ? `${contractDaysLeft} days` : 'N/A'} color={contractDaysLeft !== null && contractDaysLeft < 60 ? 'text-amber-600' : ''} />
-              </div>
-            </div>
           </div>
         )}
       </div>
 
-      {/* Upload Invoice File Modal */}
+      {/* Upload Invoice File Modal (client-level) */}
       {showUpload && (
         <Modal onClose={() => { if (!uploading) { setShowUpload(false); setUploadError(null) } }} label={`Upload invoice file for ${client.name}`}>
           <h2 className="text-lg font-semibold mb-1">Upload invoice file</h2>
@@ -750,7 +846,7 @@ export default function ClientDetail() {
         </Modal>
       )}
 
-      {/* Add Invoice Modal */}
+      {/* Add Invoice Modal — with optional PDF + description */}
       {showInv && (
         <Modal onClose={() => { if (!savingInv) { setShowInv(false); setInvError(null) } }} label={`Add invoice for ${client.name}`}>
           <h2 className="text-lg font-semibold mb-4">Add invoice — {client.name}</h2>
@@ -766,8 +862,16 @@ export default function ClientDetail() {
               <option value="pending">Pending</option>
               <option value="paid">Paid</option>
             </select>
+            <div>
+              <label className="block text-xs font-medium text-gray-500 mb-1">Attach PDF / image (optional)</label>
+              <input ref={invFileRef} type="file" accept={INVOICE_FILE_ACCEPT} aria-label="Invoice document"
+                className="w-full text-sm text-gray-600 file:mr-3 file:px-3 file:py-1.5 file:rounded-lg file:border-0 file:text-xs file:font-medium file:text-white file:cursor-pointer file:bg-[#E8650D]" />
+            </div>
+            <textarea value={invDesc} onChange={e => setInvDesc(e.target.value)} rows={2} maxLength={500}
+              placeholder="Description / note (optional) — e.g. 'Retainer Feb', 'final 50% on delivery'" aria-label="Invoice description"
+              className="w-full px-3 py-2 text-sm border border-gray-200 rounded-lg focus:outline-none focus:border-orange-400" />
             {invError && <p role="alert" className="text-xs text-red-600 bg-red-50 rounded-lg px-3 py-2">{invError}</p>}
-            <p className="text-xs text-gray-400">Overdue and due-today are calculated automatically from the due date.</p>
+            <p className="text-xs text-gray-400">Overdue and due-today are calculated automatically from the due date. The file and note are saved against this invoice and logged to activity.</p>
           </div>
           <div className="flex gap-3 mt-5">
             <button onClick={() => { setShowInv(false); setInvError(null) }} disabled={savingInv} className="flex-1 px-4 py-2 text-sm font-medium border border-gray-200 rounded-lg text-gray-600 hover:bg-gray-50 disabled:opacity-50">Cancel</button>
