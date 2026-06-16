@@ -1,6 +1,7 @@
 import type { Metadata } from 'next'
 import './globals.css'
 import AuthGuard from '@/components/AuthGuard'
+import ThemeManager from '@/components/ThemeManager'
 
 export const metadata: Metadata = {
   title: 'Wings Activation — Client Intelligence',
@@ -11,6 +12,7 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
   return (
     <html lang="en">
       <body className="bg-gray-50 text-gray-900 antialiased">
+        <ThemeManager />
         <AuthGuard>{children}</AuthGuard>
       </body>
     </html>
