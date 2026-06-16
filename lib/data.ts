@@ -1,7 +1,7 @@
 // Data layer — every Supabase read/write for the app lives here.
 // UI components never touch `supabase` directly and never see a raw PostgrestError.
 
-import { supabase, Client, Invoice, InvoiceFile, Proposal } from './supabase'
+import { supabase, Client, Invoice, InvoiceFile, Proposal, ActivityLog } from './supabase'
 
 export type Result<T> = { data: T; error: null } | { data: null; error: string }
 
@@ -104,10 +104,13 @@ export function validateInvoiceFile(file: File): string | null {
 
 const BUCKET = 'invoice-files'
 
+export type UploadOpts = { invoiceId?: string | null; description?: string | null }
+
 export async function uploadInvoiceFile(
   clientId: string,
   file: File,
   uploadedByProfileId: string | null,
+  opts: UploadOpts = {},
 ): Promise<Result<true>> {
   const validationError = validateInvoiceFile(file)
   if (validationError) return fail(validationError)
@@ -124,6 +127,8 @@ export async function uploadInvoiceFile(
 
   const ins = await supabase.from('invoice_files').insert({
     client_id: clientId,
+    invoice_id: opts.invoiceId ?? null,
+    description: opts.description?.trim() || null,
     file_path: path,
     file_name: file.name,
     file_size_bytes: file.size,
@@ -153,6 +158,61 @@ export async function getInvoiceFileUrl(filePath: string): Promise<Result<string
   const { data, error } = await supabase.storage.from(BUCKET).createSignedUrl(filePath, 300)
   if (error || !data?.signedUrl) return fail(`Could not open file: ${error?.message ?? 'no URL returned'}`)
   return ok(data.signedUrl)
+}
+
+// ---------- activity log (append-only notes / audit trail) ----------
+
+export type ActivityInput = {
+  clientId: string
+  body: string
+  authorId?: string | null
+  authorName?: string | null
+  invoiceId?: string | null
+  kind?: ActivityLog['kind']
+}
+
+export function validateActivityBody(body: string): string | null {
+  const b = body.trim()
+  if (!b) return 'Write something first.'
+  if (b.length > 2000) return 'Note is too long (max 2000 characters).'
+  return null
+}
+
+export async function addActivity(input: ActivityInput): Promise<Result<true>> {
+  const verr = validateActivityBody(input.body)
+  if (verr) return fail(verr)
+  const { error } = await supabase.from('activity_log').insert({
+    client_id: input.clientId,
+    invoice_id: input.invoiceId ?? null,
+    author_id: input.authorId ?? null,
+    author_name: input.authorName ?? null,
+    kind: input.kind ?? 'note',
+    body: input.body.trim(),
+  })
+  if (error) return fail(`Could not save note: ${error.message}`)
+  return ok(true)
+}
+
+export async function listClientActivity(clientId: string): Promise<Result<ActivityLog[]>> {
+  const { data, error } = await supabase
+    .from('activity_log')
+    .select('*')
+    .eq('client_id', clientId)
+    .order('created_at', { ascending: false })
+    .limit(200)
+  if (error) return fail(`Could not load activity: ${error.message}`)
+  return ok((data as ActivityLog[]) ?? [])
+}
+
+/** Global feed across all clients (for the /activity page). */
+export async function getRecentActivity(limit = 100): Promise<Result<ActivityLog[]>> {
+  const { data, error } = await supabase
+    .from('activity_log')
+    .select('*, clients(name)')
+    .order('created_at', { ascending: false })
+    .limit(limit)
+  if (error) return fail(`Could not load activity: ${error.message}`)
+  return ok((data as ActivityLog[]) ?? [])
 }
 
 // ---------- CSV bulk invoice import ----------
@@ -249,13 +309,15 @@ export async function getClientDetail(id: string): Promise<Result<{
   invoices: Invoice[]
   proposals: Proposal[]
   files: InvoiceFile[]
+  activity: ActivityLog[]
   portfolioMonthlyTotal: number
 }>> {
-  const [clientRes, invRes, propRes, filesRes, allRes] = await Promise.all([
+  const [clientRes, invRes, propRes, filesRes, activityRes, allRes] = await Promise.all([
     supabase.from('clients').select('*, profiles(full_name, email, role, team, emp_code)').eq('id', id).maybeSingle(),
     supabase.from('invoices').select('*').eq('client_id', id).order('due_date', { ascending: false }),
     supabase.from('proposals').select('*').eq('client_id', id).order('created_at', { ascending: false }),
     supabase.from('invoice_files').select('*, profiles(full_name)').eq('client_id', id).order('created_at', { ascending: false }),
+    supabase.from('activity_log').select('*').eq('client_id', id).order('created_at', { ascending: false }).limit(200),
     supabase.from('clients').select('monthly_value').eq('segment', 'existing'),
   ])
   if (clientRes.error) return fail(`Could not load client: ${clientRes.error.message}`)
@@ -267,6 +329,7 @@ export async function getClientDetail(id: string): Promise<Result<{
     invoices: invRes.error ? [] : ((invRes.data as Invoice[]) ?? []),
     proposals: propRes.error ? [] : ((propRes.data as Proposal[]) ?? []),
     files: filesRes.error ? [] : ((filesRes.data as InvoiceFile[]) ?? []),
+    activity: activityRes.error ? [] : ((activityRes.data as ActivityLog[]) ?? []),
     portfolioMonthlyTotal,
   })
 }
@@ -290,27 +353,40 @@ export async function createClientRecord(input: ClientInput): Promise<Result<tru
   return ok(true)
 }
 
-export async function createInvoice(input: InvoiceInput): Promise<Result<true>> {
+/** Creates an invoice and returns its new id (so a PDF can be attached to it). */
+export async function createInvoice(input: InvoiceInput): Promise<Result<{ id: string }>> {
   const validationError = validateInvoiceInput(input)
   if (validationError) return fail(validationError)
-  const { error } = await supabase.from('invoices').insert({
+  const { data, error } = await supabase.from('invoices').insert({
     client_id: input.client_id,
     amount: Number(input.amount),
     due_date: input.due_date,
     status: input.status,
     paid_date: input.status === 'paid' ? new Date().toISOString().slice(0, 10) : null,
-  })
-  if (error) return fail(`Could not save invoice: ${error.message}`)
-  return ok(true)
+  }).select('id').single()
+  if (error || !data) return fail(`Could not save invoice: ${error?.message ?? 'no id returned'}`)
+  return ok({ id: data.id as string })
 }
 
-export async function logContactToday(clientId: string, currentStatus?: string): Promise<Result<true>> {
+export async function logContactToday(
+  clientId: string,
+  currentStatus?: string,
+  author?: { id: string | null; name: string | null },
+): Promise<Result<true>> {
   const updates: { last_contact: string; status?: string } = {
     last_contact: new Date().toISOString().slice(0, 10),
   }
   if (currentStatus === 'at_risk') updates.status = 'stable'
   const { error } = await supabase.from('clients').update(updates).eq('id', clientId)
   if (error) return fail(`Could not log contact: ${error.message}`)
+  // Best-effort activity entry — never blocks the contact log itself.
+  await supabase.from('activity_log').insert({
+    client_id: clientId,
+    author_id: author?.id ?? null,
+    author_name: author?.name ?? null,
+    kind: 'contact',
+    body: 'Logged contact' + (updates.status ? ' (status moved to stable)' : ''),
+  })
   return ok(true)
 }
 
